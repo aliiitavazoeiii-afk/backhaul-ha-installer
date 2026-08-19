@@ -1,45 +1,50 @@
 # Tunnel diagnostics
 
-The diagnostic module is designed for two common incidents:
+The diagnostic module is the operational troubleshooting layer for this project. Keep troubleshooting commands here so chat can focus on interpreting results and root-cause analysis.
 
-1. VPN disconnected / unstable
-2. VPN connects but speed is unusually low
+## Install / update diagnostics
 
-It does not label a path as "filtered" from one failed probe. It reports the strongest supported diagnosis, for example `possible WSS/443 path filtering or WSS failure` when WSS fails while TCP remains reachable.
+Run `enable-diagnostics.sh` once on Foreign first and then on Iran. Re-running it updates the diagnostic tool safely and is idempotent.
 
-## One-time setup
-
-Run this once on **Foreign first**:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/main/enable-diagnostics.sh)
-```
-
-Then run the same command once on **Iran**:
-
-```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/main/enable-diagnostics.sh)
-```
-
-The Iran-side setup restarts the two Backhaul services once because it adds private diagnostic mappings.
-
-### Diagnostic-only ports
+Foreign runs a private iperf3 server on `127.0.0.1:5201`. Iran adds two private Backhaul mappings:
 
 - WSSMux: Iran `10445` -> Foreign `127.0.0.1:5201`
 - TCPMux: Iran `11445` -> Foreign `127.0.0.1:5201`
-- Foreign iperf3 listens only on `127.0.0.1:5201`
 
 No public firewall rule is added for these ports.
 
-## Fast diagnosis
+## Command reference
 
-On either server:
+`tunnel-diagnose` — fast diagnosis for disconnects, instability, unexpected failover, or a quick health check.
 
-```bash
-tunnel-diagnose
-```
+`tunnel-diagnose --deep` — run on Iran when speed is low. It adds four throughput tests: WSS Iran->Foreign, WSS Foreign->Iran, TCP Iran->Foreign, and TCP Foreign->Iran.
 
-Checks include:
+`tunnel-diagnose --repair` — conservative local repair mode. It only restarts `backhaul-wss` when the collected evidence matches a WSSMux-stall pattern. It does not automatically restart Xray, HAProxy, TCPMux, or the whole server.
+
+`tunnel-diagnose --deep --repair` — combine deep speed diagnosis with conservative repair.
+
+## WSS stall detection
+
+Foreign diagnosis no longer treats a successful TLS connection as proof that WSSMux is healthy. It also checks for recent WSS heartbeat and Backhaul health traffic. This detects the failure pattern where TLS/SNI works and the service is active, but the WSSMux session/data plane is stalled.
+
+The safe Foreign repair pattern is:
+
+- WSS TLS/SNI path reachable
+- TCPMux control reachable
+- TCP data-plane health traffic present
+- WSS data-plane health traffic absent
+- `backhaul-wss` service active
+
+The safe Iran repair pattern is:
+
+- WSS end-to-end health failed
+- TCP end-to-end health healthy
+- HAProxy valid
+- local `backhaul-wss` active
+
+If an Iran-side WSS restart does not restore end-to-end health, the diagnosis points to a likely Foreign WSS client stall rather than blindly restarting more services.
+
+## What is checked
 
 - Backhaul / WSSMux / HAProxy / health service status
 - Xray listener on Foreign `127.0.0.1:443`
@@ -47,43 +52,31 @@ Checks include:
 - HAProxy recent WSS DOWN / TCP backup activity
 - WSS TLS/SNI reachability from Foreign
 - TCPMux control reachability from Foreign
+- recent WSS heartbeat and data-plane health traffic on Foreign
 - DNS and certificate status
 - peer route, ping loss and latency
-- interface MTU and discovered PMTU
+- interface MTU and PMTU
 - Don't-Fragment packet probes
-- NIC errors/drops
-- CPU load, available memory, disk and conntrack usage
-- NTP sync
-- a short TCP retransmission-rate sample
+- CPU, memory and disk pressure
+- TCP retransmission sample
+- optional bidirectional WSS/TCP throughput
 
-## Speed diagnosis
+## Diagnosis principles
 
-Run from **Iran**:
+The tool does not claim "filtered" from a single failed probe. It separates layers:
 
-```bash
-tunnel-diagnose --deep
-```
-
-In addition to all normal checks it measures four paths independently:
-
-```text
-WSS  Iran -> Foreign
-WSS  Foreign -> Iran
-TCP  Iran -> Foreign
-TCP  Foreign -> Iran
-```
-
-This makes it possible to distinguish cases such as:
-
-- WSS slow while TCP is fast -> likely WSS-specific/path issue
-- TCP slow while WSS is fast -> likely TCPMux-specific issue
-- both transports slow + loss/retransmission -> likely network route/path quality
-- both transports healthy/fast but end-user VPN slow -> investigate Xray, user ISP/client path, or user-facing ingress next
+- TLS/SNI failed while TCP works -> possible WSS/443 path, TLS/DNS, HAProxy, or WSS issue
+- TLS/SNI works but recent WSS health traffic disappears while TCP stays healthy -> likely WSSMux session/data-plane stall
+- WSS end-to-end fails while TCP end-to-end works -> HAProxy should fail over to TCP backup
+- both WSS and TCP fail -> broader Foreign/Xray/path failure
+- both transports healthy but speed is low with loss/retransmission/PMTU warnings -> path-quality issue
+- WSS throughput far below TCP -> WSS-specific degradation
+- TCP throughput far below WSS -> TCPMux-specific degradation
 
 ## Exit codes
 
 - `0`: no significant issue detected
 - `1`: warning / degradation detected
-- `2`: a failed critical check was detected
+- `2`: failed critical check detected
 
-The final `Diagnosis` section is intended to be the first thing to use when troubleshooting.
+Share the final `Diagnosis` section and `Summary` in troubleshooting chat; share the full output only when the diagnosis is ambiguous.
