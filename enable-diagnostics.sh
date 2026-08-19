@@ -10,7 +10,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y iperf3 iputils-ping iputils-tracepath curl python3 netcat-openbsd
 
-curl -fsSL "$RAW_BASE/diagnose.sh" -o /usr/local/bin/tunnel-diagnose
+curl -fsSL "$RAW_BASE/doctor.sh" -o /usr/local/bin/tunnel-diagnose
 chmod 0755 /usr/local/bin/tunnel-diagnose
 
 if [[ "$ROLE" == "foreign" ]]; then
