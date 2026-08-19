@@ -38,35 +38,40 @@ from pathlib import Path
 import re, shutil, time
 
 def add_mapping(path, mapping):
-    p=Path(path)
+    p = Path(path)
     if not p.exists():
         raise SystemExit(f"Missing {path}")
-    text=p.read_text()
+    text = p.read_text()
     if mapping in text:
         print(f"Already present: {mapping}")
-        return
-    m=re.search(r'(?ms)^ports\s*=\s*\[\n(?P<body>.*?)^\]', text)
+        return False
+    m = re.search(r'(?ms)^ports\s*=\s*\[\n(?P<body>.*?)^\]', text)
     if not m:
         raise SystemExit(f"Cannot find ports array in {path}")
-    body=m.group('body').rstrip()
+    body = m.group('body').rstrip()
     if body and not body.endswith(','):
         body += ','
     body += f'\n    "{mapping}"\n'
-    new=text[:m.start('body')] + body + text[m.end('body'):]
-    backup=f"{path}.diag-backup-{int(time.time())}"
+    new = text[:m.start('body')] + body + text[m.end('body'):]
+    backup = f"{path}.diag-backup-{int(time.time())}"
     shutil.copy2(path, backup)
     p.write_text(new)
     print(f"Added {mapping}; backup: {backup}")
+    return True
 
-add_mapping('/etc/backhaul/server-wss.toml', '10445=127.0.0.1:5201')
-add_mapping('/etc/backhaul/server.toml', '11445=127.0.0.1:5201')
+changed = False
+changed |= add_mapping('/etc/backhaul/server-wss.toml', '10445=127.0.0.1:5201')
+changed |= add_mapping('/etc/backhaul/server.toml', '11445=127.0.0.1:5201')
+Path('/run/backhaul-diag-config-changed').write_text('1' if changed else '0')
 PY
-  systemctl restart backhaul backhaul-wss
-  sleep 3
+  if [[ "$(cat /run/backhaul-diag-config-changed 2>/dev/null || echo 0)" == "1" ]]; then
+    systemctl restart backhaul backhaul-wss
+    sleep 3
+  fi
+  rm -f /run/backhaul-diag-config-changed
   echo "Iran diagnostics enabled: WSS :10445 and TCP :11445 map privately to Foreign iperf3."
 fi
 
 echo
-echo "Use:"
-echo "  tunnel-diagnose"
-echo "  tunnel-diagnose --deep"
+echo "Diagnostics installed/updated."
+echo "Use tunnel-diagnose --help for the command reference."
