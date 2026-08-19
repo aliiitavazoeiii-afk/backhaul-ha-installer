@@ -13,12 +13,14 @@ bundle_get() {
   sed -n "s/^${1}='\([^']*\)'$/\1/p" "$BUNDLE" | head -n1
 }
 
-bundle_set_if_missing() {
+bundle_set() {
   local key="$1" value="$2"
-  if ! grep -q "^${key}='" "$BUNDLE"; then
+  if grep -q "^${key}='" "$BUNDLE"; then
+    sed -i "s|^${key}='[^']*'$|${key}='${value}'|" "$BUNDLE"
+  else
     printf "%s='%s'\n" "$key" "$value" >> "$BUNDLE"
-    chmod 0600 "$BUNDLE"
   fi
+  chmod 0600 "$BUNDLE"
 }
 
 valid_token() { [[ "$1" =~ ^[0-9a-fA-F]{64}$ ]]; }
@@ -30,7 +32,7 @@ TOKEN="$(bundle_get TCP_PLAIN_TOKEN)"
 if [[ "$ROLE" == "iran" ]]; then
   if ! valid_token "$TOKEN"; then
     TOKEN="$(openssl rand -hex 32)"
-    bundle_set_if_missing TCP_PLAIN_TOKEN "$TOKEN"
+    bundle_set TCP_PLAIN_TOKEN "$TOKEN"
   fi
 
   install -d -m 0700 /etc/backhaul
