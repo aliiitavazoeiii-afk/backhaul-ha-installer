@@ -10,7 +10,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y iperf3 iputils-ping iputils-tracepath curl python3 netcat-openbsd
 
-curl -fsSL "$RAW_BASE/doctor.sh" -o /usr/local/bin/tunnel-diagnose
+curl -fsSL "$RAW_BASE/doctor3.sh" -o /usr/local/bin/tunnel-diagnose
 chmod 0755 /usr/local/bin/tunnel-diagnose
 
 if [[ "$ROLE" == "foreign" ]]; then
@@ -69,7 +69,7 @@ PY
     sleep 3
   fi
   rm -f /run/backhaul-diag-config-changed
-  echo "Iran diagnostics enabled: WSS :10445 and TCP :11445 map privately to Foreign iperf3."
+  echo "Iran diagnostics enabled: WSSMux :10445, TCPMux :11445, plain TCP :12445 (when three-path failover is installed)."
 fi
 
 echo
