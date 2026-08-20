@@ -20,6 +20,11 @@ jobs:
       - name: Checkout installer repo
         uses: actions/checkout@v4
 
+      - name: Validate Phase 2 shell syntax
+        run: |
+          bash -n custom-backhaul/enable-stealth-wss.sh
+          bash -n custom-backhaul/rollback-stealth-wss.sh
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
