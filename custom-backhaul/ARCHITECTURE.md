@@ -24,6 +24,7 @@ Changes:
 
 - WSS certificate verification is enabled by default. `tls_skip_verify = true` is an explicit compatibility escape hatch only.
 - WSS ClientHello uses a uTLS Chrome profile instead of the stock Go TLS ClientHello.
+- Because Gorilla WebSocket performs an HTTP/1.1 Upgrade, the Chrome-like uTLS ClientHello is constrained to ALPN `http/1.1` so the server cannot negotiate h2 and then reject the WebSocket request.
 - WebSocket control and tunnel paths become deployment-configurable (`ws_control_path`, `ws_tunnel_path`).
 - Unknown or unauthenticated WebSocket paths return a generic 404 instead of exposing a distinctive 401 authentication oracle.
 - WebSocket control frames use variable padding while retaining the signal byte as byte 0, preserving compatibility with the existing control parser.
@@ -34,19 +35,31 @@ Changes:
 
 Do not expose the Backhaul TLS server directly on the backbone SNI.
 
-Target topology:
+Implemented lab topology:
 
 ```text
 Foreign custom client
-  -> TLS/WSS :443
-  -> HAProxy SNI router
-  -> nginx TLS/HTTP decoy frontend
-       unknown paths -> normal decoy HTTP content
-       secret WS paths -> Backhaul WSMux on loopback
-  -> Foreign Xray 127.0.0.1:443
+  -> TLS/WSS backbone-domain:443
+  -> Iran HAProxy TCP/SNI router
+  -> nginx TLS/HTTP decoy 127.0.0.1:9443
+       / and ordinary paths -> normal static HTTPS behavior
+       per-install secret WS paths -> Backhaul WSMux 127.0.0.1:18080
+  -> WSMux data ports 10443/10444/10445
+  -> Foreign Xray / health / iperf loopback targets
 ```
 
-The public endpoint should look and behave like an ordinary HTTPS virtual host when probed without the deployment secret. Backhaul can run as plain `wsmux` behind nginx while the public carrier remains WSS.
+The Phase 2 installer is `custom-backhaul/enable-stealth-wss.sh` and has role-aware behavior:
+
+- Iran generates and stores per-install `WSS_CONTROL_PATH` and `WSS_TUNNEL_PATH` values in `/root/backhaul-ha-secrets.env`.
+- Iran changes the existing `backhaul-wss` service configuration from direct `wssmux` TLS on `127.0.0.1:8443` to plain `wsmux` on loopback `127.0.0.1:18080`.
+- nginx owns the certificate and decoy HTTPS behavior on loopback `127.0.0.1:9443`.
+- HAProxy keeps the public `:443` SNI router but sends the backbone SNI to nginx rather than directly to Backhaul.
+- Only the generated secret control path and tunnel prefix are proxied to Backhaul; ordinary requests are served as decoy HTTPS/404 behavior.
+- Foreign keeps `wssmux` externally, verifies the real certificate, and uses the same generated secret paths.
+- Existing TCPMux and plain-TCP paths remain untouched, so they provide failover while the two Phase 2 endpoints are migrated.
+- `custom-backhaul/rollback-stealth-wss.sh` restores the pre-Phase-2 Backhaul/HAProxy/client configuration from a first-run backup.
+
+This improves resistance to simple active probing because a client without the deployment-specific path sees an ordinary HTTPS virtual host rather than a directly exposed Backhaul TLS endpoint. It does not make traffic-analysis classification impossible.
 
 ## Phase 3: transport diversity
 
@@ -85,5 +98,7 @@ Nothing from this branch should be promoted to `main` until all of the following
 - stock-vs-custom interoperability test where intended
 - end-to-end health test
 - deliberate WSS/TCP failover test
+- Phase 2 decoy root and unknown-path probe test
+- Phase 2 secret-path WSS end-to-end health/throughput test
 - reboot persistence test
 - packet capture comparison of stock vs custom ClientHello and connection timing
