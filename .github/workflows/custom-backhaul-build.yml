@@ -35,6 +35,7 @@ jobs:
         run: |
           python3 custom-backhaul/apply_patch.py /tmp/backhaul
           python3 custom-backhaul/fix_wsmux_config.py /tmp/backhaul
+          python3 custom-backhaul/fix_wss_alpn.py /tmp/backhaul
 
       - name: Add pinned uTLS dependency
         working-directory: /tmp/backhaul
@@ -47,6 +48,7 @@ jobs:
           gofmt -w config/config.go internal/server/server.go internal/client/client.go internal/server/transport/wsmux.go internal/client/transport/wsmux.go internal/utils/network/ws_dialer.go
           git diff --check
           git diff --stat
+          grep -F 'alpn.AlpnProtocols = []string{"http/1.1"}' internal/utils/network/ws_dialer.go
 
       - name: Test
         working-directory: /tmp/backhaul
