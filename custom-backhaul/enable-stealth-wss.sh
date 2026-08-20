@@ -9,6 +9,7 @@ NGINX_PORT=9443
 BACKHAUL_WSMUX_PORT=18080
 NGINX_SITE="/etc/nginx/sites-available/backhaul-decoy"
 NGINX_LINK="/etc/nginx/sites-enabled/backhaul-decoy"
+NGINX_DEFAULT_LINK="/etc/nginx/sites-enabled/default"
 DECOY_ROOT="/var/www/backhaul-decoy"
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "[x] Run as root." >&2; exit 1; }
@@ -111,6 +112,7 @@ if [[ "$ROLE" == "iran" ]]; then
   backup_path "$BUNDLE"
   backup_path "$NGINX_SITE"
   backup_path "$NGINX_LINK"
+  backup_path "$NGINX_DEFAULT_LINK"
   backup_path "$DECOY_ROOT"
 
   export DEBIAN_FRONTEND=noninteractive
@@ -119,8 +121,8 @@ if [[ "$ROLE" == "iran" ]]; then
 
   # Do not let the distro default site occupy :80; the existing Certbot flow
   # can continue using HTTP-01 independently.
-  if [[ -L /etc/nginx/sites-enabled/default && "$(readlink -f /etc/nginx/sites-enabled/default)" == "/etc/nginx/sites-available/default" ]]; then
-    rm -f /etc/nginx/sites-enabled/default
+  if [[ -L "$NGINX_DEFAULT_LINK" && "$(readlink -f "$NGINX_DEFAULT_LINK")" == "/etc/nginx/sites-available/default" ]]; then
+    rm -f "$NGINX_DEFAULT_LINK"
   fi
 
   install -d -m 0755 "$DECOY_ROOT"
