@@ -5,6 +5,7 @@ BACKUP_PTR="/etc/backhaul-ha/phase2-backup-path"
 PHASE2_MARKER="/etc/backhaul-ha/phase2-stealth-wss"
 NGINX_SITE="/etc/nginx/sites-available/backhaul-decoy"
 NGINX_LINK="/etc/nginx/sites-enabled/backhaul-decoy"
+NGINX_DEFAULT_LINK="/etc/nginx/sites-enabled/default"
 DECOY_ROOT="/var/www/backhaul-decoy"
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "[x] Run as root." >&2; exit 1; }
@@ -31,6 +32,7 @@ if [[ "$ROLE" == "iran" ]]; then
   restore_path /root/backhaul-ha-secrets.env
   restore_path "$NGINX_SITE"
   restore_path "$NGINX_LINK"
+  restore_path "$NGINX_DEFAULT_LINK"
   restore_path "$DECOY_ROOT"
 
   if command -v nginx >/dev/null 2>&1; then
