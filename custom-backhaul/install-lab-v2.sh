@@ -59,7 +59,11 @@ echo "[i] Fetching pinned custom patch set..."
 curl -fsSL --retry 4 --retry-delay 2 \
   "$REPO_RAW/$PATCH_REF/custom-backhaul/apply_patch.py" \
   -o "$work/apply_patch.py"
+curl -fsSL --retry 4 --retry-delay 2 \
+  "$REPO_RAW/$PATCH_REF/custom-backhaul/fix_wsmux_config.py" \
+  -o "$work/fix_wsmux_config.py"
 python3 "$work/apply_patch.py" "$work/src"
+python3 "$work/fix_wsmux_config.py" "$work/src"
 
 cd "$work/src"
 export GOPROXY="https://proxy.golang.org,direct"
