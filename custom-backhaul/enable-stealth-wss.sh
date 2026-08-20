@@ -16,8 +16,34 @@ DECOY_ROOT="/var/www/backhaul-decoy"
 ROLE="$(cat /etc/backhaul-ha/role 2>/dev/null || true)"
 [[ "$ROLE" == "iran" || "$ROLE" == "foreign" ]] || { echo "[x] Tunnel role not detected." >&2; exit 2; }
 [[ -f "$BUNDLE" ]] || { echo "[x] Missing $BUNDLE" >&2; exit 2; }
-[[ -f "$MARKER" ]] || { echo "[x] Custom Backhaul v2 marker missing. Install/test Phase 1 first." >&2; exit 3; }
 [[ -x /usr/local/bin/backhaul ]] || { echo "[x] Backhaul binary missing." >&2; exit 3; }
+
+require_custom_v2() {
+  if [[ -f "$MARKER" ]]; then
+    return 0
+  fi
+
+  # The Iran lab host received the tested custom binary by exact-SHA copy after
+  # the original installer could not download Go, so it may legitimately lack
+  # the installer marker. Refuse stock binaries, but permit that known workflow
+  # when the binary itself contains the custom-v2 configuration capabilities.
+  if grep -aFq 'ws_control_path' /usr/local/bin/backhaul \
+     && grep -aFq 'ws_tunnel_path' /usr/local/bin/backhaul \
+     && grep -aFq 'tls_skip_verify' /usr/local/bin/backhaul; then
+    echo "[!] Phase 1 marker missing; custom-v2 capability strings detected in the installed binary."
+    echo "[!] Continuing Phase 2 lab migration without inventing a marker."
+    return 0
+  fi
+
+  echo "[x] Custom Backhaul v2 marker/capabilities not found. Refusing Phase 2 on an unknown binary." >&2
+  exit 3
+}
+
+require_custom_v2
+
+for cmd in curl grep sed openssl; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "[x] Missing required command: $cmd" >&2; exit 3; }
+done
 
 bundle_get() {
   sed -n "s/^${1}='\([^']*\)'$/\1/p" "$BUNDLE" | head -n1
@@ -83,6 +109,17 @@ backup_path() {
   fi
 }
 
+local_https_code() {
+  local path="$1"
+  curl -ksS --max-time 6 --resolve "${DOMAIN}:443:127.0.0.1" \
+    -o /dev/null -w '%{http_code}' "https://${DOMAIN}${path}" 2>/dev/null || true
+}
+
+public_https_code() {
+  local path="$1"
+  curl -ksS --max-time 8 -o /dev/null -w '%{http_code}' "https://${DOMAIN}${path}" 2>/dev/null || true
+}
+
 DOMAIN="$(cat /etc/backhaul-ha/domain 2>/dev/null || true)"
 [[ -n "$DOMAIN" ]] || DOMAIN="$(bundle_get DOMAIN)"
 [[ -n "$DOMAIN" ]] || { echo "[x] Backbone domain missing." >&2; exit 2; }
@@ -96,6 +133,18 @@ if [[ "$ROLE" == "iran" ]]; then
   [[ -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" ]] || { echo "[x] Missing certificate for $DOMAIN" >&2; exit 5; }
   [[ -f "/etc/letsencrypt/live/$DOMAIN/privkey.pem" ]] || { echo "[x] Missing private key for $DOMAIN" >&2; exit 5; }
 
+  # Capture a pristine pre-Phase-2 state before generating deployment-specific
+  # secret paths or allowing apt/nginx to create files. This makes rollback
+  # restore the exact Phase 1 configuration rather than a partially-mutated one.
+  init_backup
+  backup_path /etc/backhaul/server-wss.toml
+  backup_path /etc/haproxy/haproxy.cfg
+  backup_path "$BUNDLE"
+  backup_path "$NGINX_SITE"
+  backup_path "$NGINX_LINK"
+  backup_path "$NGINX_DEFAULT_LINK"
+  backup_path "$DECOY_ROOT"
+
   if ! valid_path "$CONTROL_PATH"; then
     CONTROL_PATH="/assets/v3/$(openssl rand -hex 16)"
     bundle_set WSS_CONTROL_PATH "$CONTROL_PATH"
@@ -106,21 +155,12 @@ if [[ "$ROLE" == "iran" ]]; then
   fi
   [[ "$CONTROL_PATH" != "$TUNNEL_PATH" ]] || { echo "[x] Control/tunnel paths must differ." >&2; exit 5; }
 
-  init_backup
-  backup_path /etc/backhaul/server-wss.toml
-  backup_path /etc/haproxy/haproxy.cfg
-  backup_path "$BUNDLE"
-  backup_path "$NGINX_SITE"
-  backup_path "$NGINX_LINK"
-  backup_path "$NGINX_DEFAULT_LINK"
-  backup_path "$DECOY_ROOT"
-
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y
   apt-get install -y nginx
 
-  # Do not let the distro default site occupy :80; the existing Certbot flow
-  # can continue using HTTP-01 independently.
+  # Keep :80 free so the existing standalone HTTP-01 renewal path is not
+  # silently broken by nginx's distro default site.
   if [[ -L "$NGINX_DEFAULT_LINK" && "$(readlink -f "$NGINX_DEFAULT_LINK")" == "/etc/nginx/sites-available/default" ]]; then
     rm -f "$NGINX_DEFAULT_LINK"
   fi
@@ -189,9 +229,9 @@ CFG
   set_toml_string /etc/backhaul/server-wss.toml ws_tunnel_path "$TUNNEL_PATH"
   sed -i -E '/^[[:space:]]*tls_cert[[:space:]]*=/d; /^[[:space:]]*tls_key[[:space:]]*=/d' /etc/backhaul/server-wss.toml
 
-  if grep -q 'server wss_control 127.0.0.1:8443' /etc/haproxy/haproxy.cfg; then
-    sed -i "s/server wss_control 127.0.0.1:8443/server wss_control 127.0.0.1:${NGINX_PORT}/" /etc/haproxy/haproxy.cfg
-  elif ! grep -q "server wss_control 127.0.0.1:${NGINX_PORT}" /etc/haproxy/haproxy.cfg; then
+  if grep -Eq '^[[:space:]]*server[[:space:]]+wss_control[[:space:]]+127\.0\.0\.1:8443([[:space:]]|$)' /etc/haproxy/haproxy.cfg; then
+    sed -i -E "s|(^[[:space:]]*server[[:space:]]+wss_control[[:space:]]+)127\.0\.0\.1:8443|\1127.0.0.1:${NGINX_PORT}|" /etc/haproxy/haproxy.cfg
+  elif ! grep -Eq "^[[:space:]]*server[[:space:]]+wss_control[[:space:]]+127\\.0\\.0\\.1:${NGINX_PORT}([[:space:]]|$)" /etc/haproxy/haproxy.cfg; then
     echo "[x] Could not find expected HAProxy backhaul_wss server line." >&2
     exit 6
   fi
@@ -209,8 +249,18 @@ CFG
   ss -lntp 2>/dev/null | grep -q "127.0.0.1:${BACKHAUL_WSMUX_PORT}" || { echo "[x] Backhaul WSMux loopback listener missing." >&2; exit 7; }
   ss -lntp 2>/dev/null | grep -q "127.0.0.1:${NGINX_PORT}" || { echo "[x] nginx decoy TLS listener missing." >&2; exit 7; }
 
-  code="$(curl -ksS --resolve "${DOMAIN}:${NGINX_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' "https://${DOMAIN}:${NGINX_PORT}/")"
-  [[ "$code" == 200 ]] || { echo "[x] Decoy HTTPS root returned HTTP $code" >&2; exit 7; }
+  direct_code="$(curl -ksS --max-time 6 --resolve "${DOMAIN}:${NGINX_PORT}:127.0.0.1" -o /dev/null -w '%{http_code}' "https://${DOMAIN}:${NGINX_PORT}/" 2>/dev/null || true)"
+  [[ "$direct_code" == 200 ]] || { echo "[x] Direct nginx decoy root returned HTTP ${direct_code:-error}" >&2; exit 7; }
+
+  chain_code="$(local_https_code /)"
+  [[ "$chain_code" == 200 ]] || { echo "[x] HAProxy -> nginx decoy root returned HTTP ${chain_code:-error}" >&2; exit 7; }
+
+  probe_path="/$(openssl rand -hex 12)"
+  probe_code="$(local_https_code "$probe_path")"
+  [[ "$probe_code" == 404 ]] || { echo "[x] Unknown HTTPS probe returned HTTP ${probe_code:-error}, expected 404" >&2; exit 7; }
+
+  secret_noauth_code="$(local_https_code "$CONTROL_PATH")"
+  [[ "$secret_noauth_code" == 404 ]] || { echo "[x] Secret control path without auth returned HTTP ${secret_noauth_code:-error}, expected generic 404" >&2; exit 7; }
 
   cat > "$PHASE2_MARKER" <<EOF
 role=iran
@@ -224,13 +274,23 @@ EOF
   chmod 0600 "$PHASE2_MARKER"
 
   echo "[+] Phase 2 Iran ingress ready."
-  echo "[+] Public SNI now terminates on nginx decoy TLS; Backhaul WSMux is loopback-only."
+  echo "[+] HAProxy SNI -> nginx decoy TLS -> loopback Backhaul WSMux smoke tests passed."
+  echo "[+] Unknown and unauthenticated probe behavior is generic HTTP 404."
   echo "[i] WSS will remain on TCPMux/plain failover until the Foreign client receives the new secret paths."
   echo "[i] Copy $BUNDLE to Foreign, then run this same Phase 2 script there."
 else
   valid_path "$CONTROL_PATH" || { echo "[x] WSS_CONTROL_PATH missing/invalid in bundle. Run Phase 2 on Iran first and copy the updated bundle." >&2; exit 8; }
   valid_path "$TUNNEL_PATH" || { echo "[x] WSS_TUNNEL_PATH missing/invalid in bundle. Run Phase 2 on Iran first and copy the updated bundle." >&2; exit 8; }
   [[ -f /etc/backhaul/client-wss.toml ]] || { echo "[x] Missing /etc/backhaul/client-wss.toml" >&2; exit 5; }
+
+  # Refuse to migrate the client until the Iran decoy ingress is actually
+  # reachable. This keeps the existing WSS client untouched on a half-migrated
+  # or DNS-misrouted lab.
+  root_code="$(public_https_code /)"
+  [[ "$root_code" == 200 ]] || { echo "[x] Public decoy root returned HTTP ${root_code:-error}; Iran Phase 2 ingress is not ready." >&2; exit 8; }
+  probe_path="/$(openssl rand -hex 12)"
+  probe_code="$(public_https_code "$probe_path")"
+  [[ "$probe_code" == 404 ]] || { echo "[x] Public unknown-path probe returned HTTP ${probe_code:-error}, expected 404." >&2; exit 8; }
 
   init_backup
   backup_path /etc/backhaul/client-wss.toml
@@ -257,5 +317,5 @@ EOF
   chmod 0600 "$PHASE2_MARKER"
 
   echo "[+] Phase 2 Foreign client configured with per-install secret WSS paths."
-  echo "[i] Run tunnel-diagnose --deep on Iran to verify WSSMux end-to-end health and throughput."
+  echo "[i] Run the Phase 2 verifier, then tunnel-diagnose --deep on Iran."
 fi
