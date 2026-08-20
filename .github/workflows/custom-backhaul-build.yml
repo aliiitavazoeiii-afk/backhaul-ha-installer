@@ -34,6 +34,7 @@ jobs:
       - name: Apply private patch set
         run: |
           python3 custom-backhaul/apply_patch.py /tmp/backhaul
+          python3 custom-backhaul/fix_wsmux_config.py /tmp/backhaul
 
       - name: Add pinned uTLS dependency
         working-directory: /tmp/backhaul
