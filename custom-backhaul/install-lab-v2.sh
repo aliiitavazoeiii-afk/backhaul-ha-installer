@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 UPSTREAM_COMMIT="df7966f8f725837a680ea7b90bd37ea52666c277"
-PATCH_REF="138c6e7125389bfc5d96eb41674ab2e6d15acb80"
+PATCH_REF="10932060a3ef8c42c287a40242444bed28091a27"
 GO_VERSION="1.23.1"
 GO_SHA256="49bbb517cfa9eee677e1e7897f7cf9cfdbcf49e05f61984a2789136de359f9bd"
 STOCK_SHA256="7f1b1439d7fe1d15ae0b376e15614fe13d8a12f6e07a90263e310ea2a9d601fb"
@@ -62,8 +62,12 @@ curl -fsSL --retry 4 --retry-delay 2 \
 curl -fsSL --retry 4 --retry-delay 2 \
   "$REPO_RAW/$PATCH_REF/custom-backhaul/fix_wsmux_config.py" \
   -o "$work/fix_wsmux_config.py"
+curl -fsSL --retry 4 --retry-delay 2 \
+  "$REPO_RAW/$PATCH_REF/custom-backhaul/fix_wss_alpn.py" \
+  -o "$work/fix_wss_alpn.py"
 python3 "$work/apply_patch.py" "$work/src"
 python3 "$work/fix_wsmux_config.py" "$work/src"
+python3 "$work/fix_wss_alpn.py" "$work/src"
 
 cd "$work/src"
 export GOPROXY="https://proxy.golang.org,direct"
@@ -76,6 +80,8 @@ export GOTOOLCHAIN="local"
   internal/server/transport/wsmux.go \
   internal/client/transport/wsmux.go \
   internal/utils/network/ws_dialer.go
+
+grep -F 'alpn.AlpnProtocols = []string{"http/1.1"}' internal/utils/network/ws_dialer.go >/dev/null
 
 echo "[i] Running upstream/custom test suite..."
 "$GO" test ./...
