@@ -24,6 +24,7 @@ jobs:
         run: |
           bash -n custom-backhaul/enable-stealth-wss.sh
           bash -n custom-backhaul/rollback-stealth-wss.sh
+          bash -n custom-backhaul/verify-stealth-wss.sh
 
       - name: Setup Go
         uses: actions/setup-go@v5
