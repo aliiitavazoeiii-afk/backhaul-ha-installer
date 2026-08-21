@@ -18,4 +18,4 @@ jobs:
           # These legacy diagnostic prototypes predate the custom-v2 work and
           # already contain known ShellCheck warnings. The installed, validated
           # diagnostics path is generated/upgraded by custom-backhaul scripts.
-          ignore_paths: 'doctor.sh diagnose.sh doctor3.sh'
+          ignore_names: 'doctor.sh diagnose.sh doctor3.sh'
