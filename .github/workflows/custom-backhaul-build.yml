@@ -29,6 +29,7 @@ jobs:
           bash -n custom-backhaul/upgrade-phase2-split-tls.sh
           bash -n custom-backhaul/verify-phase2-split-tls.sh
           bash -n custom-backhaul/cleanup-phase2-ab.sh
+          bash -n custom-backhaul/upgrade-split-tls-diagnostics.sh
           bash -n custom-backhaul/upgrade-phase3-diagnostics.sh
           bash -n custom-backhaul/enable-phase3-tcptls.sh
           bash -n custom-backhaul/enable-phase3-tcptls-v2.sh
