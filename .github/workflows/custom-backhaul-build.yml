@@ -22,6 +22,7 @@ jobs:
 
       - name: Validate custom shell syntax
         run: |
+          bash -n custom-backhaul/install-final-v2.sh
           bash -n custom-backhaul/enable-stealth-wss.sh
           bash -n custom-backhaul/rollback-stealth-wss.sh
           bash -n custom-backhaul/verify-stealth-wss.sh
