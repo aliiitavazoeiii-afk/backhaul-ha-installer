@@ -63,26 +63,60 @@ This improves resistance to simple active probing because a client without the d
 
 ## Phase 3: transport diversity
 
-Current TCPMux/plain-TCP fallbacks are useful for availability but remain raw Backhaul-family transports on the wire. For censorship resistance, the long-term secondary path should be independently wrapped rather than merely another raw Backhaul mode.
+Phase 3 independently TLS-wraps the TCPMux backup instead of exposing raw Backhaul TCPMux on the network.
 
-Planned priority:
+Implemented lab target:
+
+```text
+Foreign Backhaul TCPMux
+  -> 127.0.0.1:13080
+  -> stunnel client
+       certificate-chain verification
+       hostname verification
+       separate SNI/profile
+  -> SECOND-SNI:443
+  -> Iran HAProxy SNI router
+  -> stunnel TLS server 127.0.0.1:9444
+  -> raw Backhaul TCPMux 127.0.0.1:18081
+  -> TCPMux data/health/iperf ports 11443/11444/11445
+```
+
+The role-aware installer is `custom-backhaul/enable-phase3-tcptls.sh`.
+
+- Phase 3 requires Phase 2 to be present first.
+- Iran requires a second DNS hostname that resolves to the same Iran public IP. The hostname is stored as `TCP_TLS_DOMAIN` in `/root/backhaul-ha-secrets.env`.
+- The second hostname must differ from the Phase 2 WSS hostname.
+- HAProxy keeps public `:443` and selects the TCPMux TLS wrapper by SNI.
+- Iran Backhaul TCPMux changes from `0.0.0.0:3080` to loopback-only `127.0.0.1:18081`.
+- stunnel terminates the secondary TLS profile on loopback `127.0.0.1:9444` and forwards decrypted bytes to raw TCPMux.
+- Foreign Backhaul TCPMux changes from directly dialing Iran `:3080` to dialing loopback `127.0.0.1:13080`; a stunnel client then connects to the second SNI on public `:443`.
+- Foreign stunnel validates the public CA chain and the hostname in addition to sending SNI.
+- The legacy raw `:3080` listener is removed; the old UFW exception is removed on Iran.
+- The plain TCP `:3081` path remains unchanged and IP-restricted as the emergency third path.
+- `custom-backhaul/rollback-phase3-tcptls.sh` restores the pre-Phase-3 TCPMux/HAProxy/client configuration.
+- `custom-backhaul/verify-phase3-tcptls.sh` validates TLS routing, certificate verification, loopback-only raw TCPMux, and all three end-to-end health paths.
+
+The secondary stunnel/OpenSSL TLS profile is deliberately different from the Phase 1/2 uTLS WebSocket profile. This is transport diversity, not a claim of browser indistinguishability. A TLS-wrapped long-lived TCP tunnel can still be classified from metadata or endpoint behavior.
+
+Final priority order remains:
 
 1. stealth WSS/WSMux through decoy HTTPS frontend
-2. TLS-wrapped TCPMux using a separate SNI/profile
+2. independently TLS-wrapped TCPMux using a separate SNI/profile
 3. IP-restricted plain TCP emergency path
 
 HAProxy continues to select a path only after end-to-end health succeeds.
 
 ## Rotation
 
-Each installation should generate its own:
+Each installation should generate or configure its own:
 
 - WSS control path
 - WSS tunnel prefix
 - transport tokens
+- separate TCPMux TLS hostname
 - optional decoy hostname/content profile
 
-These values are secrets for active-probe resistance, not substitutes for cryptographic authentication.
+These values are deployment-specific controls, not substitutes for cryptographic authentication.
 
 ## Non-goals
 
@@ -97,8 +131,11 @@ Nothing from this branch should be promoted to `main` until all of the following
 - WSS certificate verification test
 - stock-vs-custom interoperability test where intended
 - end-to-end health test
-- deliberate WSS/TCP failover test
+- deliberate WSS/TCP/plain failover test
 - Phase 2 decoy root and unknown-path probe test
 - Phase 2 secret-path WSS end-to-end health/throughput test
-- reboot persistence test
-- packet capture comparison of stock vs custom ClientHello and connection timing
+- Phase 3 separate-SNI TLS handshake and hostname verification test
+- Phase 3 raw TCPMux loopback-only test
+- Phase 3 end-to-end TCPMux health/throughput test
+- reboot persistence test after Phase 3
+- packet capture comparison of WSS and TLS-wrapped TCPMux profiles and timing
