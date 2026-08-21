@@ -1,14 +1,14 @@
 # Custom Backhaul v2
 
-This branch develops a private Backhaul-derived transport build without changing the production `main` installer until the custom binary passes build and lab tests.
+This branch contains the validated lab implementation of the private Backhaul v0.7.2-derived HA transport stack. Production `main` remains unchanged until an explicit promotion decision is made.
 
 ## Goals
 
-1. Keep the proven Backhaul forwarding core and our HAProxy health/failover architecture.
+1. Keep the proven Backhaul forwarding core and HAProxy end-to-end health/failover architecture.
 2. Remove avoidable upstream security weaknesses.
 3. Reduce static transport signatures and active-probe oracles.
 4. Make deployment-specific wire details configurable rather than globally identical.
-5. Preserve observability and automatic failover.
+5. Preserve observability, automatic failover, rollback, and reboot persistence.
 
 ## Threat model
 
@@ -18,54 +18,63 @@ Therefore changing only WebSocket headers is not enough. The highest-value chang
 
 ## Phase 1: custom binary hardening
 
-The first custom build is based on the exact upstream `v0.7.2` source and applies a deterministic patch during CI.
+The custom build is based on the exact upstream `v0.7.2` source and applies a deterministic patch during CI.
 
 Changes:
 
 - WSS certificate verification is enabled by default. `tls_skip_verify = true` is an explicit compatibility escape hatch only.
 - WSS ClientHello uses a uTLS Chrome profile instead of the stock Go TLS ClientHello.
 - Because Gorilla WebSocket performs an HTTP/1.1 Upgrade, the Chrome-like uTLS ClientHello is constrained to ALPN `http/1.1` so the server cannot negotiate h2 and then reject the WebSocket request.
-- WebSocket control and tunnel paths become deployment-configurable (`ws_control_path`, `ws_tunnel_path`).
+- WebSocket control and tunnel paths are deployment-configurable (`ws_control_path`, `ws_tunnel_path`).
 - Unknown or unauthenticated WebSocket paths return a generic 404 instead of exposing a distinctive 401 authentication oracle.
 - WebSocket control frames use variable padding while retaining the signal byte as byte 0, preserving compatibility with the existing control parser.
 - Server heartbeat timing gets bounded jitter instead of an exact fixed interval.
 - User-Agent and Origin are configurable for the WebSocket client. These are primarily active-probe/application-profile controls because they are encrypted inside WSS.
 
-## Phase 2: stealth WSS ingress
+## Phase 2: decoy WSS ingress with split TLS
 
-Do not expose the Backhaul TLS server directly on the backbone SNI.
+The initial Phase 2 implementation used nginx for both TLS termination and HTTP/WebSocket routing. Lab testing found severe one-direction WSS throughput stalls in that topology while TCPMux/plain transports remained fast and CPU was mostly idle.
 
-Implemented lab topology:
+Controlled A/B testing isolated the problem:
+
+1. `stunnel TLS -> Backhaul WSMux` removed the stalls.
+2. `stunnel TLS -> nginx plain HTTP/WebSocket proxy -> Backhaul WSMux` also removed the stalls.
+3. Therefore nginx HTTP/WebSocket proxying was retained, while TLS termination moved to stunnel.
+
+Validated final Phase 2 topology:
 
 ```text
-Foreign custom client
-  -> TLS/WSS backbone-domain:443
+Foreign custom WSSMux client
+  -> bh1.biya2film.top:443
   -> Iran HAProxy TCP/SNI router
-  -> nginx TLS/HTTP decoy 127.0.0.1:9443
-       / and ordinary paths -> normal static HTTPS behavior
+  -> stunnel TLS terminator 127.0.0.1:9443
+  -> nginx plain HTTP decoy/router 127.0.0.1:9080
+       / and ordinary paths -> static decoy HTTP behavior
        per-install secret WS paths -> Backhaul WSMux 127.0.0.1:18080
-  -> WSMux data ports 10443/10444/10445
+  -> WSMux data/health/iperf ports 10443/10444/10445
   -> Foreign Xray / health / iperf loopback targets
 ```
 
-The Phase 2 installer is `custom-backhaul/enable-stealth-wss.sh` and has role-aware behavior:
+Phase 2 deployment starts with `custom-backhaul/enable-stealth-wss.sh`; the validated split-TLS migration is `custom-backhaul/upgrade-phase2-split-tls.sh`.
 
 - Iran generates and stores per-install `WSS_CONTROL_PATH` and `WSS_TUNNEL_PATH` values in `/root/backhaul-ha-secrets.env`.
-- Iran changes the existing `backhaul-wss` service configuration from direct `wssmux` TLS on `127.0.0.1:8443` to plain `wsmux` on loopback `127.0.0.1:18080`.
-- nginx owns the certificate and decoy HTTPS behavior on loopback `127.0.0.1:9443`.
-- HAProxy keeps the public `:443` SNI router but sends the backbone SNI to nginx rather than directly to Backhaul.
-- Only the generated secret control path and tunnel prefix are proxied to Backhaul; ordinary requests are served as decoy HTTPS/404 behavior.
-- Foreign keeps `wssmux` externally, verifies the real certificate, and uses the same generated secret paths.
-- Existing TCPMux and plain-TCP paths remain untouched, so they provide failover while the two Phase 2 endpoints are migrated.
-- `custom-backhaul/rollback-stealth-wss.sh` restores the pre-Phase-2 Backhaul/HAProxy/client configuration from a first-run backup.
+- Backhaul WSS server runs as plain `wsmux` on loopback `127.0.0.1:18080`.
+- stunnel owns the backbone certificate on loopback `127.0.0.1:9443`.
+- nginx owns only plain loopback HTTP on `127.0.0.1:9080` and performs decoy/secret-path routing.
+- HAProxy keeps the public `:443` SNI router and sends the backbone SNI to stunnel `:9443`.
+- Only generated secret control/tunnel paths are proxied to Backhaul; ordinary requests receive decoy 200/404 behavior.
+- Foreign remains `wssmux`, validates the real certificate, and uses the generated secret paths.
+- Certificate renewal restarts the WSS stunnel terminator through a deploy hook.
+- `custom-backhaul/verify-phase2-split-tls.sh` is authoritative for the final Phase 2 ingress.
+- Temporary A/B service `:9445` is removed by `custom-backhaul/cleanup-phase2-ab.sh`.
 
 This improves resistance to simple active probing because a client without the deployment-specific path sees an ordinary HTTPS virtual host rather than a directly exposed Backhaul TLS endpoint. It does not make traffic-analysis classification impossible.
 
-## Phase 3: transport diversity
+## Phase 3: independently TLS-wrapped TCPMux backup
 
 Phase 3 independently TLS-wraps the TCPMux backup instead of exposing raw Backhaul TCPMux on the network.
 
-Implemented lab target:
+Validated topology:
 
 ```text
 Foreign Backhaul TCPMux
@@ -74,37 +83,62 @@ Foreign Backhaul TCPMux
        certificate-chain verification
        hostname verification
        separate SNI/profile
-  -> SECOND-SNI:443
+  -> edge1.biya2film.top:443
   -> Iran HAProxy SNI router
   -> stunnel TLS server 127.0.0.1:9444
   -> raw Backhaul TCPMux 127.0.0.1:18081
   -> TCPMux data/health/iperf ports 11443/11444/11445
 ```
 
-The role-aware installer is `custom-backhaul/enable-phase3-tcptls.sh`.
-
-- Phase 3 requires Phase 2 to be present first.
-- Iran requires a second DNS hostname that resolves to the same Iran public IP. The hostname is stored as `TCP_TLS_DOMAIN` in `/root/backhaul-ha-secrets.env`.
-- The second hostname must differ from the Phase 2 WSS hostname.
-- HAProxy keeps public `:443` and selects the TCPMux TLS wrapper by SNI.
-- Iran Backhaul TCPMux changes from `0.0.0.0:3080` to loopback-only `127.0.0.1:18081`.
-- stunnel terminates the secondary TLS profile on loopback `127.0.0.1:9444` and forwards decrypted bytes to raw TCPMux.
-- Foreign Backhaul TCPMux changes from directly dialing Iran `:3080` to dialing loopback `127.0.0.1:13080`; a stunnel client then connects to the second SNI on public `:443`.
-- Foreign stunnel validates the public CA chain and the hostname in addition to sending SNI.
-- The legacy raw `:3080` listener is removed; the old UFW exception is removed on Iran.
-- The plain TCP `:3081` path remains unchanged and IP-restricted as the emergency third path.
-- `custom-backhaul/rollback-phase3-tcptls.sh` restores the pre-Phase-3 TCPMux/HAProxy/client configuration.
-- `custom-backhaul/verify-phase3-tcptls.sh` validates TLS routing, certificate verification, loopback-only raw TCPMux, and all three end-to-end health paths.
+- Phase 3 requires Phase 2 first.
+- The TCPMux TLS hostname is separate from the WSS hostname and stored as `TCP_TLS_DOMAIN`.
+- HAProxy selects the TCPMux wrapper by SNI on the same public `:443` listener.
+- Iran raw TCPMux is loopback-only on `127.0.0.1:18081`.
+- Foreign Backhaul TCPMux dials local stunnel `127.0.0.1:13080`.
+- Foreign stunnel validates the public CA chain and hostname and sends the secondary SNI.
+- Legacy public raw TCPMux `:3080` is removed.
+- Plain TCP `:3081` remains IP-restricted as the emergency third path.
+- `custom-backhaul/verify-phase3-tcptls.sh` validates the Phase 3 chain and all three end-to-end health paths.
 
 The secondary stunnel/OpenSSL TLS profile is deliberately different from the Phase 1/2 uTLS WebSocket profile. This is transport diversity, not a claim of browser indistinguishability. A TLS-wrapped long-lived TCP tunnel can still be classified from metadata or endpoint behavior.
 
-Final priority order remains:
+## Final priority order
 
-1. stealth WSS/WSMux through decoy HTTPS frontend
-2. independently TLS-wrapped TCPMux using a separate SNI/profile
-3. IP-restricted plain TCP emergency path
+1. WSSMux through backbone SNI, stunnel TLS, nginx decoy/path router, and loopback WSMux.
+2. Independently TLS-wrapped TCPMux using a separate SNI/profile.
+3. IP-restricted plain TCP emergency path.
 
-HAProxy continues to select a path only after end-to-end health succeeds.
+HAProxy selects a path only after end-to-end HTTP health succeeds.
+
+## Validated lab results — 2026-08-21
+
+Final pair:
+
+- Iran: `185.215.230.204`
+- Foreign: `193.57.9.196`
+- WSS SNI: `bh1.biya2film.top`
+- TCPMux TLS SNI: `edge1.biya2film.top`
+
+Validation completed:
+
+- Custom build and Go tests passed in GitHub Actions during development.
+- Phase 2 split-TLS verifier: `23 OK, 0 WARN, 0 FAIL`.
+- Phase 3 verifier: `16 OK, 0 WARN, 0 FAIL`.
+- Phase-3-aware deep diagnostics passed without failures after the final diagnostics update.
+- All three end-to-end health paths returned HTTP 200.
+- Legacy direct WSS `:8443` and raw TCPMux `:3080` are not exposed.
+- Decoy root returns HTTP 200; random and unauthenticated secret paths return generic HTTP 404.
+- Deliberate WSS -> TCPMux -> plain -> TCPMux -> WSS failover/failback was validated before the final split-TLS performance optimization.
+- After the split-TLS optimization, all three paths remained healthy.
+- Both hosts were rebooted after final deployment; services recovered, diagnostics remained clean, and an actual VPN client remained connected/functional.
+
+Observed throughput samples:
+
+- Final WSS single-stream Iran -> Foreign: `228`, `226`, `231 Mbps` across three consecutive 15-second runs, with the prior multi-second zero-throughput stalls eliminated.
+- TLS-wrapped TCPMux deep sample: approximately `308 Mbps` Iran -> Foreign and `234 Mbps` Foreign -> Iran.
+- Plain TCP deep sample: approximately `392 Mbps` Iran -> Foreign and `256 Mbps` Foreign -> Iran.
+
+Performance figures are point-in-time lab measurements, not guaranteed capacity.
 
 ## Rotation
 
@@ -122,20 +156,8 @@ These values are deployment-specific controls, not substitutes for cryptographic
 
 This design cannot guarantee invisibility against a state-level classifier. Traffic-analysis and endpoint/IP reputation can still identify or block a tunnel. The objective is to remove easy shared signatures, improve cryptographic hygiene, make active probing less informative, and provide independent fallback paths.
 
-## Release gate
+## Promotion state
 
-Nothing from this branch should be promoted to `main` until all of the following pass:
+The experimental branch is now a validated lab baseline. `main` is intentionally still unchanged.
 
-- custom binary compiles from a pinned upstream tag
-- `go test ./...`
-- WSS certificate verification test
-- stock-vs-custom interoperability test where intended
-- end-to-end health test
-- deliberate WSS/TCP/plain failover test
-- Phase 2 decoy root and unknown-path probe test
-- Phase 2 secret-path WSS end-to-end health/throughput test
-- Phase 3 separate-SNI TLS handshake and hostname verification test
-- Phase 3 raw TCPMux loopback-only test
-- Phase 3 end-to-end TCPMux health/throughput test
-- reboot persistence test after Phase 3
-- packet capture comparison of WSS and TLS-wrapped TCPMux profiles and timing
+Before a production promotion, an operator may additionally choose to capture and compare WSS versus TLS-wrapped TCPMux packet traces under representative load. This is useful for transport-profile analysis but is not required for the functional/reboot baseline recorded above.
