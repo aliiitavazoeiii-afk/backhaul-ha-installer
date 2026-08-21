@@ -26,6 +26,7 @@ jobs:
           bash -n custom-backhaul/rollback-stealth-wss.sh
           bash -n custom-backhaul/verify-stealth-wss.sh
           bash -n custom-backhaul/upgrade-phase2-diagnostics.sh
+          bash -n custom-backhaul/upgrade-phase3-diagnostics.sh
           bash -n custom-backhaul/enable-phase3-tcptls.sh
           bash -n custom-backhaul/enable-phase3-tcptls-v2.sh
           bash -n custom-backhaul/rollback-phase3-tcptls.sh
