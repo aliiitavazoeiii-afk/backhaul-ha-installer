@@ -17,3 +17,4 @@ bash "$TMP" \
   --replace-existing-tunnel
 
 bash <(curl -fsSL "$BASE/enable-sticky-users.sh")
+bash <(curl -fsSL "$BASE/enable-fast-failover.sh")
