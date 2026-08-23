@@ -1,72 +1,101 @@
 # Dual-Foreign Active/Active Backhaul
 
-Experimental project for one Iran ingress and two simultaneously-active Foreign exits.
+One Iran ingress with two simultaneously-active Foreign exits.
 
-This project is deliberately isolated from `custom-backhaul-v2`. It does not change the v2 branch, installer, or PR.
+This project is deliberately isolated from `custom-backhaul-v2`. It does not merge, replace, or reuse the custom WSS Stealth v2 transport. The current primary transport is stock Backhaul v0.7.2 WSSMux.
 
-## Goal
+## Current production-test topology
 
-Split new user TCP connections across two Foreign servers so one Foreign IP does not carry the full sustained load/connection pattern.
+- Iran: `5.10.248.50`
+- Foreign A: `193.57.9.144`
+- Foreign B: `193.57.9.192`
+- Domain A: `bh3.biya2film.top`
+- Domain B: `bh3b.biya2film.top`
 
 ```text
 Users
   |
 Iran :443 / HAProxy
   |
-  +-- leastconn --> Foreign A slot --> WSSMux -> TCPMux -> plain TCP
+  +-- sticky Active/Active --> Foreign A slot --> WSSMux -> TCPMux -> plain TCP --> Xray 127.0.0.1:443
   |
-  +-- leastconn --> Foreign B slot --> WSSMux -> TCPMux -> plain TCP
+  +-- sticky Active/Active --> Foreign B slot --> WSSMux -> TCPMux -> plain TCP --> Xray 127.0.0.1:443
 ```
 
-Normal state is Active/Active. If a whole Foreign slot becomes unhealthy, HAProxy removes that slot and sends new connections to the surviving Foreign.
+Normal state is Active/Active. New source IPs are distributed across A/B, then source-IP stickiness keeps normal reconnects and parallel connections on the same Foreign. If a Foreign/Xray path becomes unhealthy, that slot is removed and reconnects go to the surviving Foreign.
 
-## Isolation from v2
+Existing TCP sessions cannot be migrated losslessly after sudden server death; failover means fast reconnect to the surviving slot.
 
-- Binary: `/usr/local/bin/backhaul-dual`
-- Config: `/etc/dual-backhaul`
-- State: `/etc/dual-backhaul-ha`
-- Services: `dual-bh-*`
-- Diagnostic command: `dual-diagnose`
+## Isolation from custom Backhaul v2
 
-The project can coexist on disk with v2. On the same Iran host only one ingress stack can own public `:443` at a time. `--replace-existing-tunnel` disables known legacy `backhaul*` services without deleting their configs.
+Dual-Foreign uses its own names and paths:
 
-## Important behavior
+- binary: `/usr/local/bin/backhaul-dual`
+- config: `/etc/dual-backhaul`
+- state: `/etc/dual-backhaul-ha`
+- services: `dual-bh-*`
+- diagnostic command: `dual-diagnose`
 
-- Load balancing is **per TCP connection**, never per packet.
-- Existing connections stay on the Foreign selected when the connection was accepted.
-- Each Foreign has independent domains, tokens, control ports, health path and Backhaul processes.
-- A and B should preferably be on different providers / ASNs.
-- This architecture reduces per-Foreign load. It does **not** reduce Iran traffic usage because all user traffic still crosses Iran.
-- It does not guarantee that an IP can never be filtered; the goal is to avoid concentrating the whole traffic signature and volume on one Foreign endpoint.
+The projects can coexist on disk. On the same Iran host only one ingress stack can own public `:443` at a time.
 
-## Data-plane installer
+## Transport order inside each Foreign slot
 
-`install-dual.sh` implements three roles:
+1. stock Backhaul v0.7.2 WSSMux
+2. TCPMux
+3. plain TCP
 
-- `iran`
-- `foreign-a`
-- `foreign-b`
+Each slot has independent transport tokens, Backhaul processes and health paths.
 
-Iran creates two root-only bundle files. Copy each bundle directly to its corresponding Foreign; never paste bundle contents into chat/logs.
+## HAProxy behavior already validated
 
-## User management
+The initial per-connection load-balancing design caused visible user IP churn because one user's parallel connections could exit through both Foreign servers.
 
-Both Foreign Xray instances must ultimately contain the same users because either server may receive any new user connection.
+The current design uses source-IP stickiness plus redispatch. Sticky routing, Active/Active distribution and failover on Foreign/Xray failure have been tested successfully.
 
-The data-plane installer does **not** copy `x-ui.db` between servers. Database copying is intentionally avoided because it also carries panel/server state.
+Health is Xray-aware: a Foreign slot is considered healthy only when the Foreign-local Xray listener on `127.0.0.1:443` is actually accepting connections.
 
-Planned control-plane component: `user-sync` using the x-ui/Xray management API so Foreign A is the source of truth and user add/update/delete operations are mirrored to Foreign B. Until that component is validated, users must be kept identical on both Foreign Xray instances.
+Fast failover uses aggressive health timing and closes HAProxy sessions associated with a slot when it is marked down so clients reconnect through the surviving slot.
+
+## User synchronization
+
+Both Foreign Xray instances must recognize the same users because HAProxy selects the Foreign before Xray authentication.
+
+The control plane is now implemented under `user-sync/`.
+
+Foreign A is the source of truth. The canonical sync engine mirrors add/update operations to Foreign B, verifies normalized user state by hash and can mirror deletions after explicit enablement. Delete mirroring includes blast-radius guards to prevent a transient empty/bad source response from wiping B.
+
+Install/operate it with the files documented in `USER-SYNC.md`.
+
+The sync controller is intentionally independent from the data plane. A sync failure does not stop HAProxy, Backhaul or Xray; it only delays convergence until a later retry.
 
 ## Current milestone
 
-`v0.2.0`: data-plane installer implemented, not yet production validated.
+The data plane has passed:
 
-Before production it must pass:
+- two-Foreign Active/Active distribution
+- source-IP sticky routing
+- Xray-aware health checking
+- Foreign/Xray failover to the surviving slot on reconnect
+- three transports per Foreign: WSSMux -> TCPMux -> plain TCP
 
-1. A/B connection distribution under sustained load
-2. WSS -> TCPMux -> plain fallback independently inside each slot
-3. full Foreign-A and Foreign-B failure/failback
-4. reboot persistence
-5. user authentication against identical Xray users on both exits
-6. no HAProxy routing loops or SNI-control leakage into the user pool
-7. clean rollback to the previous single-Foreign stack
+The user-sync production candidate is implemented but still requires the live add/update/delete validation sequence against the two production-test X-UI panels.
+
+Remaining before `Production Final`:
+
+1. install canonical user-sync controller
+2. validate add on A -> automatic add on B
+3. validate edit on A -> automatic update on B
+4. explicitly enable delete mirroring and validate delete on A -> automatic delete on B
+5. confirm sync/hash state after one full timer cycle
+6. reboot test for controller, Foreign A and Foreign B
+7. run `dual-diagnose` on all three hosts
+8. re-test sticky Active/Active routing and Foreign/Xray failover after reboot
+9. record final validated state in `docs/PROJECT-HISTORY.md`
+
+## Security/operations rules
+
+- never commit X-UI credentials, UUID lists, tunnel tokens or secret bundles
+- keep `/etc/dual-user-sync/config.json` root-only (`0600`)
+- do not copy a live `x-ui.db` between Foreign servers
+- preserve failure state long enough to run raw-path diagnostics before reinstall/reboot during unexplained outages
+- keep this project separate from `custom-backhaul-v2` unless an explicit future migration is designed and approved
