@@ -10,7 +10,7 @@ bash "$TMP" \
   --role iran \
   --iran-ip 5.10.248.50 \
   --foreign-a-ip 193.57.9.144 \
-  --foreign-b-ip 185.232.84.214 \
+  --foreign-b-ip 193.57.9.192 \
   --domain-a bh3.biya2film.top \
   --domain-b bh3b.biya2film.top \
   --replace-existing-tunnel
