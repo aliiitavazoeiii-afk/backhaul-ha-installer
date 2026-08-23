@@ -9,14 +9,17 @@ CFG="/etc/dual-user-sync/config.json"
 [[ -f "$CFG" ]] || { echo '[x] Existing user-sync config not found' >&2; exit 2; }
 
 install -d -m 0755 /usr/local/lib/dual-user-sync
-curl -fsSL "$BASE/dual_user_sync_v2.py" -o "$SYNC"
+curl -fsSL "$BASE/dual_user_sync.py" -o "$SYNC"
 chmod 0755 "$SYNC"
 python3 -m py_compile "$SYNC"
 
-echo '[i] Checking normalized A/B user state...'
+echo '[i] Installed canonical user-sync implementation.'
+python3 "$SYNC" --version
+
+echo '[i] Checking A/B user state...'
 dual-usersync check
 
-echo '[i] Running safe synchronization (deletions stay in current configured mode)...'
+echo '[i] Running synchronization using the current deletion safety mode...'
 dual-usersync sync
 
 systemctl daemon-reload
