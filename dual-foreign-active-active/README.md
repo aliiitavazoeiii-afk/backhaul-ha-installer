@@ -20,6 +20,16 @@ Iran :443 / HAProxy
 
 Normal state is Active/Active. If a whole Foreign slot becomes unhealthy, HAProxy removes that slot and sends new connections to the surviving Foreign.
 
+## Isolation from v2
+
+- Binary: `/usr/local/bin/backhaul-dual`
+- Config: `/etc/dual-backhaul`
+- State: `/etc/dual-backhaul-ha`
+- Services: `dual-bh-*`
+- Diagnostic command: `dual-diagnose`
+
+The project can coexist on disk with v2. On the same Iran host only one ingress stack can own public `:443` at a time. `--replace-existing-tunnel` disables known legacy `backhaul*` services without deleting their configs.
+
 ## Important behavior
 
 - Load balancing is **per TCP connection**, never per packet.
@@ -29,6 +39,16 @@ Normal state is Active/Active. If a whole Foreign slot becomes unhealthy, HAProx
 - This architecture reduces per-Foreign load. It does **not** reduce Iran traffic usage because all user traffic still crosses Iran.
 - It does not guarantee that an IP can never be filtered; the goal is to avoid concentrating the whole traffic signature and volume on one Foreign endpoint.
 
+## Data-plane installer
+
+`install-dual.sh` implements three roles:
+
+- `iran`
+- `foreign-a`
+- `foreign-b`
+
+Iran creates two root-only bundle files. Copy each bundle directly to its corresponding Foreign; never paste bundle contents into chat/logs.
+
 ## User management
 
 Both Foreign Xray instances must ultimately contain the same users because either server may receive any new user connection.
@@ -37,24 +57,11 @@ The data-plane installer does **not** copy `x-ui.db` between servers. Database c
 
 Planned control-plane component: `user-sync` using the x-ui/Xray management API so Foreign A is the source of truth and user add/update/delete operations are mirrored to Foreign B. Until that component is validated, users must be kept identical on both Foreign Xray instances.
 
-## Roles
-
-### Iran
-
-Generates two Foreign-specific secret bundles and installs:
-
-- six isolated Backhaul server transports (three per Foreign)
-- SNI routing for the two WSS control domains
-- two local Foreign slots with transport fallback
-- top-level `leastconn` Active/Active balancing between slots
-
-### Foreign A / Foreign B
-
-Each installs three Backhaul clients and a loopback-only health endpoint. Xray is expected to listen on `127.0.0.1:443`.
-
 ## Current milestone
 
-`v0.1.0`: architecture scaffold and installer work in progress. Do not deploy to production until lab validation covers:
+`v0.2.0`: data-plane installer implemented, not yet production validated.
+
+Before production it must pass:
 
 1. A/B connection distribution under sustained load
 2. WSS -> TCPMux -> plain fallback independently inside each slot
@@ -62,3 +69,4 @@ Each installs three Backhaul clients and a loopback-only health endpoint. Xray i
 4. reboot persistence
 5. user authentication against identical Xray users on both exits
 6. no HAProxy routing loops or SNI-control leakage into the user pool
+7. clean rollback to the previous single-Foreign stack
