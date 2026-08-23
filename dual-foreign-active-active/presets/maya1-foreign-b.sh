@@ -7,3 +7,4 @@ bash <(curl -fsSL https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul
   --role foreign-b \
   --bundle "$BUNDLE" \
   --replace-existing-tunnel
+bash <(curl -fsSL https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/agent/dual-foreign-active-active/dual-foreign-active-active/enable-xray-aware-health.sh)
