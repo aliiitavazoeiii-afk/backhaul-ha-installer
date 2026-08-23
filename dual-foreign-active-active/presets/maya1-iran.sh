@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-RAW="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/agent/dual-foreign-active-active/dual-foreign-active-active/install-dual.sh"
+BASE="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/agent/dual-foreign-active-active/dual-foreign-active-active"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
-curl -fsSL "$RAW" -o "$TMP"
+
+curl -fsSL "$BASE/install-dual.sh" -o "$TMP"
 bash -n "$TMP"
 bash "$TMP" \
   --role iran \
@@ -14,3 +15,5 @@ bash "$TMP" \
   --domain-a bh3.biya2film.top \
   --domain-b bh3b.biya2film.top \
   --replace-existing-tunnel
+
+bash <(curl -fsSL "$BASE/enable-sticky-users.sh")
