@@ -18,6 +18,8 @@ install -d -m 0755 "$LIBDIR"
 curl -fsSL "$BASE/dual_user_sync.py" -o "$SYNC"
 chmod 0755 "$SYNC"
 python3 -m py_compile "$SYNC"
+echo -n '[i] Installed user-sync version: '
+python3 "$SYNC" --version
 
 echo
 echo 'Dual-Foreign 3x-ui user sync setup'
@@ -73,7 +75,12 @@ cfg = {
     "inbound_id": None,
     "timeout": 10
   },
-  "delete_mirroring": False
+  "delete_mirroring": False,
+  "delete_guard": {
+    "allow_empty_primary": False,
+    "max_delete_count": 25,
+    "max_delete_fraction": 0.50
+  }
 }
 with open(os.environ["CFG"], "w") as f:
     json.dump(cfg, f, indent=2)
@@ -97,7 +104,8 @@ case "${1:-sync}" in
   logs)
     journalctl -u dual-user-sync.service -n "${2:-60}" --no-pager
     ;;
-  *) echo 'Usage: dual-usersync [sync|check|enable-delete|disable-delete|status|logs]' >&2; exit 2 ;;
+  version) exec python3 "$SYNC" --version ;;
+  *) echo 'Usage: dual-usersync [sync|check|enable-delete|disable-delete|status|logs|version]' >&2; exit 2 ;;
 esac
 EOF
 chmod 0755 /usr/local/bin/dual-usersync
@@ -112,6 +120,7 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=/usr/local/bin/dual-usersync sync
 User=root
+UMask=0077
 Nice=10
 EOF
 
@@ -151,7 +160,9 @@ echo '[+] User sync installed and timer enabled.'
 echo '[+] Source of truth: Foreign A'
 echo '[+] Interval: 30 seconds'
 echo '[+] Delete mirroring: OFF (safe mode)'
+echo '[+] Delete guard: empty-primary blocked; max 25 / 50% per run'
 echo '[+] Check: dual-usersync check'
 echo '[+] Run now: dual-usersync sync'
 echo '[+] Logs: dual-usersync logs'
-echo '[+] After delete testing: dual-usersync enable-delete'
+echo '[+] Version: dual-usersync version'
+echo '[+] After add/update testing: dual-usersync enable-delete'
