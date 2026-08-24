@@ -1,0 +1,37 @@
+name: Aegis Tunnel
+
+on:
+  push:
+    branches: ["agent/aegis-production"]
+    paths:
+      - "aegis-tunnel/**"
+      - ".github/workflows/aegis.yml"
+  pull_request:
+    paths:
+      - "aegis-tunnel/**"
+      - ".github/workflows/aegis.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: aegis-tunnel
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: aegis-tunnel/go.mod
+      - name: Format check
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Race integration tests
+        run: go test ./... -race -count=1
+      - name: Static build
+        env:
+          CGO_ENABLED: '0'
+        run: go build -trimpath -ldflags='-s -w' -o /tmp/aegis ./cmd/aegis
+      - name: Smoke version
+        run: /tmp/aegis -version | grep -Fx '0.1.0'
