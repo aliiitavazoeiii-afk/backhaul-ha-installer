@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION=0.1.0
 BRANCH=agent/dual-wss-stealth
 REPO=aliiitavazoeiii-afk/backhaul-ha-installer
 RAW="https://raw.githubusercontent.com/${REPO}/${BRANCH}/dual-wss-stealth"
