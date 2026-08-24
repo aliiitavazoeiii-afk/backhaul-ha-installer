@@ -13,6 +13,8 @@ import (
 	"github.com/aliiitavazoeiii-afk/backhaul-ha-installer/aegis-tunnel/internal/ws"
 )
 
+const maxStreamsPerCarrier = 4096
+
 type streamState struct {
 	id      uint32
 	conn    net.Conn
@@ -91,6 +93,10 @@ func (c *carrier) addStream(id uint32, conn net.Conn) (*streamState, error) {
 	s := newStreamState(id, conn)
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
+	if len(c.streams) >= maxStreamsPerCarrier {
+		s.close()
+		return nil, errors.New("carrier stream limit reached")
+	}
 	if _, ok := c.streams[id]; ok {
 		s.close()
 		return nil, errors.New("duplicate stream id")
