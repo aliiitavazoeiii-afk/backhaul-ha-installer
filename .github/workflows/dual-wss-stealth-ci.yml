@@ -1,0 +1,34 @@
+name: Dual WSS Stealth CI
+
+on:
+  push:
+    branches:
+      - agent/dual-wss-stealth
+  pull_request:
+    branches:
+      - agent/custom-backhaul-v2
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Shell syntax
+        run: |
+          bash -n dual-wss-stealth/build-custom-v2.sh
+          bash -n dual-wss-stealth/install.sh
+          bash -n dual-wss-stealth/clean-project.sh
+
+      - name: Build and test custom v2
+        run: sudo bash dual-wss-stealth/build-custom-v2.sh
+
+      - name: Verify capabilities
+        run: |
+          sudo test -x /usr/local/bin/backhaul-stealth
+          sudo grep -aFq 'ws_control_path' /usr/local/bin/backhaul-stealth
+          sudo grep -aFq 'ws_tunnel_path' /usr/local/bin/backhaul-stealth
+          sudo grep -aFq 'tls_skip_verify' /usr/local/bin/backhaul-stealth
