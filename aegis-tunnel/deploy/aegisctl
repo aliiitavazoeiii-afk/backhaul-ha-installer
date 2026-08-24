@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+CFG=/etc/haproxy/haproxy.cfg
+BACKUP_DIR=/root/dual-stealth-panel-backups
+FORCE=0
+[[ "${2:-}" == "--force" ]] && FORCE=1
+backup(){ install -d -m0700 "$BACKUP_DIR"; cp -a "$CFG" "$BACKUP_DIR/haproxy.aegis.$(date +%Y%m%d-%H%M%S).cfg"; }
+ports(){
+ case "$1:$2" in
+  a:aegis) echo '30443 30444';; a:legacy) echo '10443 10444';;
+  b:aegis) echo '31443 31444';; b:legacy) echo '20443 20444';;
+  *) exit 2;;
+ esac
+}
+health(){ local slot=$1 mode=$2 d h; read -r d h <<<"$(ports "$slot" "$mode")"; curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${h}/healthz" 2>/dev/null || true; }
+current_engine(){
+ local slot=$1 name="foreign_$1" line
+ line="$(grep -E "^[[:space:]]*server[[:space:]]+${name}[[:space:]]+" "$CFG" | head -n1 || true)"
+ case "$line" in
+  *127.0.0.1:30443*|*127.0.0.1:31443*) echo aegis;;
+  *127.0.0.1:10443*|*127.0.0.1:20443*) echo legacy;;
+  *) echo unknown;;
+ esac
+}
+switch_backend(){
+ local slot=$1 mode=$2 name d h code current
+ [[ "$slot" == a || "$slot" == b ]] || exit 2
+ [[ "$mode" == aegis || "$mode" == legacy ]] || exit 2
+ [[ -f "$CFG" ]] || { echo "[x] HAProxy config missing: $CFG" >&2; exit 2; }
+ read -r d h <<<"$(ports "$slot" "$mode")"; name="foreign_${slot}"; current="$(current_engine "$slot")"
+ code="$(health "$slot" "$mode")"
+ if [[ "$code" != 200 && $FORCE -ne 1 ]]; then
+   echo "[x] Target ${mode} ${slot^^} health=${code:-000}; refusing switch." >&2
+   echo "[i] If this is an intentional emergency override, append --force." >&2
+   exit 3
+ fi
+ [[ "$current" == "$mode" ]] && { echo "[i] ${name} already uses ${mode}."; return 0; }
+ backup
+ python3 - "$CFG" "$name" "$d" "$h" <<'PY'
+from pathlib import Path
+import re,sys
+p=Path(sys.argv[1]);name=sys.argv[2];data=sys.argv[3];health=sys.argv[4]
+s=p.read_text()
+pat=rf'(?m)^(\s*server\s+{re.escape(name)}\s+)127\.0\.0\.1:\d+(\s+check\s+port\s+)\d+(.*)$'
+s2,n=re.subn(pat,rf'\g<1>127.0.0.1:{data}\g<2>{health}\g<3>',s,count=1)
+if n!=1: raise SystemExit('HAProxy slot line not found')
+p.write_text(s2)
+PY
+ if ! haproxy -c -f "$CFG" >/dev/null; then
+   echo '[x] HAProxy validation failed; configuration not reloaded.' >&2
+   exit 4
+ fi
+ systemctl reload haproxy
+ echo "[+] ${name}: ${current} -> ${mode} data=${d} health=${h} target_health=${code:-000}"
+}
+case "${1:-status}" in
+ status)
+   echo '=== Aegis migration ==='
+   for s in a b; do
+     printf '%s engine=%s legacy=' "${s^^}" "$(current_engine "$s")"; health "$s" legacy; printf ' aegis='; health "$s" aegis; echo
+   done
+   grep -E '^\s*server foreign_[ab] ' "$CFG" || true
+   echo '--- Iran Aegis services ---'
+   systemctl is-active aegis-a-server aegis-b-server 2>/dev/null || true
+   ;;
+ promote-a) switch_backend a aegis;; promote-b) switch_backend b aegis;;
+ rollback-a) switch_backend a legacy;; rollback-b) switch_backend b legacy;;
+ *) echo 'Usage: aegisctl {status|promote-a|promote-b|rollback-a|rollback-b} [--force]' >&2; exit 2;;
+esac
