@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - agent/dual-wss-stealth
+  pull_request:
+    branches:
+      - agent/custom-backhaul-v2
   workflow_dispatch:
 
 jobs:
