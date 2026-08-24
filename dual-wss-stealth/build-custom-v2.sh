@@ -10,9 +10,6 @@ UPSTREAM_COMMIT=df7966f8f725837a680ea7b90bd37ea52666c277
 PATCH_REF=e9111c6d78a922972482e3de720d1f82dca062d8
 RAW=https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer
 MIN_GO=1.23.1
-TOOLCHAIN_VERSION=1.24.12
-TOOLCHAIN_SHA256=bddf8e653c82429aea7aec2520774e79925d4bb929fe20e67ecc00dd5af44c50
-TOOLCHAIN_URL="https://go.dev/dl/go${TOOLCHAIN_VERSION}.linux-amd64.tar.gz"
 
 log(){ printf '[+] %s\n' "$*"; }
 info(){ printf '[i] %s\n' "$*"; }
@@ -67,23 +64,33 @@ if command -v go >/dev/null 2>&1; then
     GOFMT="$(command -v gofmt)"
     log "Using existing Go $installed_go"
   else
-    info "Existing Go $installed_go is older than required $MIN_GO; using pinned toolchain."
+    info "Existing Go $installed_go is older than required $MIN_GO."
   fi
 fi
 
 if [[ -z "$GO" ]]; then
-  info "Downloading pinned Go ${TOOLCHAIN_VERSION} toolchain..."
-  curl -fL --retry 4 --retry-delay 2 --retry-all-errors \
-    "$TOOLCHAIN_URL" -o "$work/go.tar.gz" \
-    || die "Cannot download Go ${TOOLCHAIN_VERSION} toolchain."
-  echo "$TOOLCHAIN_SHA256  $work/go.tar.gz" | sha256sum -c - >/dev/null \
-    || die 'Go toolchain SHA256 mismatch.'
-  mkdir -p "$work/toolchain"
-  tar -xzf "$work/go.tar.gz" -C "$work/toolchain"
-  GO="$work/toolchain/go/bin/go"
-  GOFMT="$work/toolchain/go/bin/gofmt"
+  info 'Installing Go 1.23 from the OS package repository...'
+  if apt-cache show golang-1.23-go >/dev/null 2>&1; then
+    apt-get install -y golang-1.23-go
+  else
+    die 'golang-1.23-go is not available in this OS repository and no suitable Go is already installed.'
+  fi
+
+  for base in /usr/lib/go-1.23/bin /usr/local/go/bin; do
+    if [[ -x "$base/go" && -x "$base/gofmt" ]]; then
+      pkg_go_ver="$("$base/go" version | awk '{print $3}' | sed 's/^go//')"
+      if version_ge "$pkg_go_ver" "$MIN_GO"; then
+        GO="$base/go"
+        GOFMT="$base/gofmt"
+        log "Using packaged Go $pkg_go_ver from $base"
+        break
+      fi
+    fi
+  done
 fi
 
+[[ -n "$GO" && -x "$GO" ]] || die 'No usable Go compiler found after package installation.'
+[[ -n "$GOFMT" && -x "$GOFMT" ]] || die 'No usable gofmt found after package installation.'
 "$GO" version
 
 info 'Applying pinned Custom Backhaul v2 patches...'
@@ -92,7 +99,7 @@ python3 "$work/patches/fix_wsmux_config.py" "$work/src"
 python3 "$work/patches/fix_wss_alpn.py" "$work/src"
 
 cd "$work/src"
-export GOPROXY=https://proxy.golang.org,direct
+export GOPROXY='https://proxy.golang.org|direct'
 export GOTOOLCHAIN=local
 
 info 'Resolving pinned uTLS dependency...'
