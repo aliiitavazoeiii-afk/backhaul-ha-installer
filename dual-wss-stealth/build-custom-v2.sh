@@ -7,7 +7,7 @@ set -Eeuo pipefail
 OUT=/usr/local/bin/backhaul-stealth
 UPSTREAM_REPO=https://github.com/Musixal/Backhaul.git
 UPSTREAM_COMMIT=df7966f8f725837a680ea7b90bd37ea52666c277
-PATCH_REF=e9111c6d78a922972482e3de720d1f82dca062d8
+PATCH_REF=a1afc641cb307d190fdca0dda62359fead8eed7e
 RAW=https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer
 MIN_GO=1.23.1
 
@@ -36,8 +36,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/src" "$work/patches"
 
-info 'Preflight: fetching the three pinned custom patch files...'
-for f in apply_patch.py fix_wsmux_config.py fix_wss_alpn.py; do
+info 'Preflight: fetching the four pinned custom patch files...'
+for f in apply_patch.py fix_wsmux_config.py fix_wss_alpn.py fix_wss_tunnel_socket_buffers.py; do
   curl -fL --retry 4 --retry-delay 2 --retry-all-errors \
     "$RAW/$PATCH_REF/custom-backhaul/$f" -o "$work/patches/$f" \
     || die "Cannot fetch pinned patch: $f"
@@ -97,6 +97,7 @@ info 'Applying pinned Custom Backhaul v2 patches...'
 python3 "$work/patches/apply_patch.py" "$work/src"
 python3 "$work/patches/fix_wsmux_config.py" "$work/src"
 python3 "$work/patches/fix_wss_alpn.py" "$work/src"
+python3 "$work/patches/fix_wss_tunnel_socket_buffers.py" "$work/src"
 
 cd "$work/src"
 export GOPROXY='https://proxy.golang.org|direct'
@@ -115,6 +116,8 @@ info 'Resolving pinned uTLS dependency...'
 
 grep -F 'alpn.AlpnProtocols = []string{"http/1.1"}' internal/utils/network/ws_dialer.go >/dev/null \
   || die 'Patched HTTP/1.1 ALPN assertion failed.'
+grep -F 'c.config.Mode, 3, 0, 0, c.config.TLSSkipVerify' internal/client/transport/wsmux.go >/dev/null \
+  || die 'WSMux tunnel default socket-buffer assertion failed.'
 
 info 'Running upstream/custom Go tests...'
 "$GO" test ./...
