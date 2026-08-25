@@ -132,6 +132,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wc.MaxPayload = proto.HeaderSize + proto.MaxData
+	_ = wc.SetReadDeadline(time.Now().Add(10 * time.Second))
 	id := s.nextSession.Add(1)
 	c := newCarrier(id, wc)
 	b, err := wc.ReadBinary()
@@ -144,6 +145,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		c.close()
 		return
 	}
+	_ = wc.SetReadDeadline(time.Time{})
 	if !s.addSession(c) {
 		c.close()
 		log.Printf("carrier %d rejected: carrier limit reached", id)
@@ -300,7 +302,11 @@ func (s *Server) acceptLocal(ctx context.Context, ln net.Listener, lc ListenerCo
 }
 
 func (s *Server) readSession(c *carrier) {
+	readWindow := 3*s.cfg.keepAlive() + 2*time.Second
 	for {
+		if err := c.w.SetReadDeadline(time.Now().Add(readWindow)); err != nil {
+			return
+		}
 		b, err := c.w.ReadBinary()
 		if err != nil {
 			return
