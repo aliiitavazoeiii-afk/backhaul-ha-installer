@@ -141,15 +141,15 @@ func headerHasToken(h http.Header, name, token string) bool {
 	return false
 }
 
-func (c *Conn) Close() error                         { return c.c.Close() }
-func (c *Conn) RemoteAddr() net.Addr                 { return c.c.RemoteAddr() }
-func (c *Conn) SetReadDeadline(t time.Time) error    { return c.c.SetReadDeadline(t) }
-func (c *Conn) SetWriteDeadline(t time.Time) error   { return c.c.SetWriteDeadline(t) }
-func (c *Conn) SetDeadline(t time.Time) error        { return c.c.SetDeadline(t) }
-func (c *Conn) WriteBinary(payload []byte) error     { return c.writeFrame(opBinary, payload) }
-func (c *Conn) WritePing(payload []byte) error       { return c.writeFrame(opPing, payload) }
-func (c *Conn) WritePong(payload []byte) error       { return c.writeFrame(opPong, payload) }
-func (c *Conn) WriteClose() error                    { return c.writeFrame(opClose, nil) }
+func (c *Conn) Close() error                       { return c.c.Close() }
+func (c *Conn) RemoteAddr() net.Addr               { return c.c.RemoteAddr() }
+func (c *Conn) SetReadDeadline(t time.Time) error  { return c.c.SetReadDeadline(t) }
+func (c *Conn) SetWriteDeadline(t time.Time) error { return c.c.SetWriteDeadline(t) }
+func (c *Conn) SetDeadline(t time.Time) error      { return c.c.SetDeadline(t) }
+func (c *Conn) WriteBinary(payload []byte) error   { return c.writeFrame(opBinary, payload) }
+func (c *Conn) WritePing(payload []byte) error     { return c.writeFrame(opPing, payload) }
+func (c *Conn) WritePong(payload []byte) error     { return c.writeFrame(opPong, payload) }
+func (c *Conn) WriteClose() error                  { return c.writeFrame(opClose, nil) }
 
 func (c *Conn) writeFrame(op byte, payload []byte) error {
 	if c.MaxPayload > 0 && len(payload) > c.MaxPayload {
