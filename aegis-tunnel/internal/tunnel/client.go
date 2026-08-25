@@ -212,6 +212,15 @@ func (cl *Client) sessionLoop(ctx context.Context, slot int) {
 			continue
 		}
 		cl.addSession(c)
+		if !cl.healthy.Load() {
+			cl.removeSession(c)
+			c.close()
+			if !sleepContext(ctx, jitterDuration(backoff)) {
+				return
+			}
+			backoff = growBackoff(backoff)
+			continue
+		}
 		log.Printf("carrier[%d] online", slot)
 		cl.readSession(ctx, c)
 		cl.removeSession(c)
@@ -303,11 +312,16 @@ func (cl *Client) connect(ctx context.Context) (*carrier, error) {
 	if origin == "" {
 		origin = "https://" + host
 	}
+	if err := conn.SetDeadline(time.Now().Add(cl.cfg.dialTimeout())); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 	wc, err := ws.ClientHandshake(conn, host, path, cl.cfg.Token, origin)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
+	_ = wc.SetDeadline(time.Time{})
 	wc.MaxPayload = proto.HeaderSize + proto.MaxData
 	id := cl.nextSession.Add(1)
 	c := newCarrier(id, wc)
@@ -328,11 +342,15 @@ func randomHexSecure(n int) (string, error) {
 }
 
 func (cl *Client) readSession(ctx context.Context, c *carrier) {
+	readWindow := 3*cl.cfg.keepAlive() + 2*time.Second
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
+		}
+		if err := c.w.SetReadDeadline(time.Now().Add(readWindow)); err != nil {
+			return
 		}
 		b, err := c.w.ReadBinary()
 		if err != nil {
