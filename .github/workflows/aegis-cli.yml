@@ -17,42 +17,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Bash syntax - controller
+      - name: Bash syntax
         run: bash -n aegis-cli/setup.sh
 
-      - name: Extract and syntax-check embedded Foreign installer
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          s = Path('aegis-cli/setup.sh').read_text()
-          marker = "cat <<'REMOTE'\n"
-          start = s.index(marker) + len(marker)
-          end = s.index('\nREMOTE\n', start)
-          remote = s[start:end] + '\n'
-          Path('/tmp/aegis-remote-xui.sh').write_text(remote)
-          PY
-          bash -n /tmp/aegis-remote-xui.sh
-          shellcheck -S warning /tmp/aegis-remote-xui.sh
+      - name: ShellCheck
+        run: shellcheck -S warning aegis-cli/setup.sh
 
       - name: Verify immutable production pins
         run: |
           grep -Fq "AEGIS_PIN='ef0e8a44065ca537c976858c9f9ae8f7a503313c'" aegis-cli/setup.sh
           grep -Fq "BACKUP_PIN='2be6343fb6af4e99d5c019eaf698e06047388b73'" aegis-cli/setup.sh
-          grep -Fq "VERSION='2.9.4'" aegis-cli/setup.sh
-          grep -Fq "ffff36ba6750b62e54bba3ec771e003d2bded9bbda30ae0d960d5599235d4ee7" aegis-cli/setup.sh
-          grep -Fq "5dbf2abdbe8199acf1d3684ed8d0dce337336a5bd12d903273b690ed48e11b29" aegis-cli/setup.sh
 
-      - name: Static safety invariants
+      - name: Verify tunnel-only safety invariants
         run: |
           grep -Fq "StrictHostKeyChecking=accept-new" aegis-cli/setup.sh
           grep -Fq "REMOTE HOST IDENTIFICATION HAS CHANGED" aegis-cli/setup.sh
           grep -Fq "read -rs pw" aegis-cli/setup.sh
-          grep -Fq "listenIP '127.0.0.1'" aegis-cli/setup.sh
-          grep -Fq "'listen':'127.0.0.1','port':443,'protocol':'vless'" aegis-cli/setup.sh
-          grep -Fq "/panel/api/inbounds/add" aegis-cli/setup.sh
-          grep -Fq "PRAGMA quick_check" aegis-cli/setup.sh
-          grep -Fq "No continuous user-sync is enabled." aegis-cli/setup.sh
-          grep -Fq "server direct_backup" aegis-cli/setup.sh
+          grep -Fq "retry_cmd 4 3 ssh" aegis-cli/setup.sh
+          grep -Fq "retry_cmd 4 3 scp" aegis-cli/setup.sh
+          grep -Fq "systemctl is-active --quiet x-ui" aegis-cli/setup.sh
+          grep -Fq "/dev/tcp/127.0.0.1/443" aegis-cli/setup.sh
+          grep -Fq "Existing Aegis backup relay detected; reusing it" aegis-cli/setup.sh
+          grep -Fq "server[[:space:]]+direct_backup" aegis-cli/setup.sh
+          grep -Fq "This installer never installs or modifies 3x-ui." aegis-cli/setup.sh
+          grep -Fq "This installer does not install, clone, sync, reset, or modify 3x-ui." aegis-cli/setup.sh
+
+      - name: Ensure 3x-ui remains user-managed
+        run: |
+          ! grep -Eq 'MHSanaei|x-ui-linux|panel/api/inbounds|setting -username|PRAGMA quick_check' aegis-cli/setup.sh
 
       - name: No mutable dependency URLs for Aegis installers
         run: |
