@@ -17,6 +17,7 @@ PRIMARY_BUNDLE='/root/aegis-primary.env'
 BACKUP_ROOT='/root/aegis-single-backups'
 
 log(){ printf '[+] %s\n' "$*"; }
+info(){ printf '[i] %s\n' "$*"; }
 warn(){ printf '[!] %s\n' "$*" >&2; }
 die(){ printf '[x] %s\n' "$*" >&2; exit 1; }
 
@@ -25,10 +26,10 @@ usage(){
 Aegis Single Primary installer
 
 IRAN:
-  install.sh --role iran --iran-ip IRAN_IP --domain DOMAIN
+  install-single.sh --role iran --iran-ip IRAN_IP --domain DOMAIN
 
 FOREIGN:
-  install.sh --role foreign --bundle /root/aegis-primary.env
+  install-single.sh --role foreign --bundle /root/aegis-primary.env
 USAGE
 }
 
@@ -107,27 +108,31 @@ find_go(){
 
 build_aegis(){
   install_build_deps
-  local work src go actual
+  local work src go gofmt_bin actual
   work="$(mktemp -d)"
+  trap 'rm -rf "${work:-}"' RETURN
   src="$work/src"
   mkdir -p "$src"
   git -C "$src" init -q
   git -C "$src" remote add origin "https://github.com/${REPO}.git"
-  git -C "$src" fetch -q --depth 1 origin "$ENGINE_PIN" || { rm -rf "$work"; die 'Cannot fetch pinned Aegis source.'; }
+  git -C "$src" fetch -q --depth 1 origin "$ENGINE_PIN" || die 'Cannot fetch pinned Aegis source.'
   git -C "$src" checkout -q --detach FETCH_HEAD
   actual="$(git -C "$src" rev-parse HEAD)"
-  [[ "$actual" == "$ENGINE_PIN" ]] || { rm -rf "$work"; die "Aegis source pin mismatch: $actual"; }
+  [[ "$actual" == "$ENGINE_PIN" ]] || die "Aegis source pin mismatch: $actual"
 
-  go="$(find_go)" || { rm -rf "$work"; die 'No usable Go compiler found.'; }
+  go="$(find_go)" || die 'No usable Go compiler found.'
+  gofmt_bin="$(dirname "$go")/gofmt"
+  [[ -x "$gofmt_bin" ]] || die 'No matching gofmt binary found.'
   cd "$src/aegis-tunnel"
-  [[ -z "$(gofmt -l .)" ]] || { cd /; rm -rf "$work"; die 'Pinned source unexpectedly fails gofmt.'; }
+  [[ -z "$("$gofmt_bin" -l .)" ]] || die 'Pinned source unexpectedly fails gofmt.'
   "$go" vet ./...
   "$go" test ./... -count=1 -timeout=60s
   CGO_ENABLED=0 "$go" build -trimpath -ldflags='-s -w' -o "$work/aegis" ./cmd/aegis
-  [[ "$($work/aegis -version)" == "$EXPECTED_VERSION" ]] || { cd /; rm -rf "$work"; die 'Aegis version verification failed.'; }
+  [[ "$($work/aegis -version)" == "$EXPECTED_VERSION" ]] || die 'Aegis version verification failed.'
   install -m 0755 "$work/aegis" "$AEGIS_BIN"
   cd /
   rm -rf "$work"
+  trap - RETURN
   log "Aegis ${EXPECTED_VERSION} installed from pinned commit ${ENGINE_PIN}."
 }
 
@@ -251,6 +256,13 @@ preflight_iran(){
 
   if [[ ! -f "$STATE_FILE" ]] && ss -Hlnpt 2>/dev/null | awk '$4 ~ /:443$/ {found=1} END{exit !found}'; then
     die 'Port 443 is already in use on Iran. Refusing to replace an unknown production listener.'
+  fi
+}
+
+prepare_firewall(){
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    ufw allow 443/tcp >/dev/null || true
+    ufw allow 80/tcp >/dev/null || true
   fi
 }
 
@@ -400,6 +412,7 @@ install_iran(){
   preflight_iran
   build_aegis
   install_iran_packages
+  prepare_firewall
   ensure_certificate
   load_or_create_identity
   write_server_unit
@@ -413,11 +426,6 @@ install_iran(){
 systemctl reload nginx
 EOFHOOK
   chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/aegis-nginx
-
-  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    ufw allow 443/tcp >/dev/null || true
-    ufw allow 80/tcp >/dev/null || true
-  fi
 
   systemctl daemon-reload
   systemctl enable --now aegis-server nginx haproxy >/dev/null
@@ -494,7 +502,19 @@ EOFSTATE
   systemctl enable --now aegis-client >/dev/null
   sleep 3
   systemctl is-active --quiet aegis-client || die 'aegis-client failed to start.'
-  log "FOREIGN Aegis client installed; Xray was preserved. Backup: $backup"
+  local connected=0 i
+  for i in {1..12}; do
+    if ss -Hntp 2>/dev/null | grep -Fq "${IRAN_IP}:443"; then
+      connected=1
+      break
+    fi
+    sleep 1
+  done
+  if (( connected == 0 )); then
+    journalctl -u aegis-client -n 30 --no-pager || true
+    die 'Aegis client is running but no carrier reached Iran:443.'
+  fi
+  log 'FOREIGN Aegis client installed; Xray was preserved and carrier is connected.'
   aegisctl status || true
 }
 
