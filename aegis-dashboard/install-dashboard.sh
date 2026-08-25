@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CODE_PIN='dd43ce878ea2fccd743ba764d76e709007fc102a'
+CODE_PIN='42c54b4ac3cb58f4010e466bf1a90db373820002'
 AEGIS_PIN='ef0e8a44065ca537c976858c9f9ae8f7a503313c'
 BACKUP_PIN='2be6343fb6af4e99d5c019eaf698e06047388b73'
 REPO='aliiitavazoeiii-afk/backhaul-ha-installer'
