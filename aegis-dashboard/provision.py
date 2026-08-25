@@ -81,7 +81,17 @@ def capture_template(primary):
     if not sqlite_ok(tmp): tmp.unlink(missing_ok=True); raise RuntimeError('captured golden database failed SQLite quick_check')
     os.chmod(tmp,0o600); tmp.replace(TEMPLATE_FILE); log(f'Golden template saved: {TEMPLATE_FILE} ({TEMPLATE_FILE.stat().st_size} bytes)')
 def install_xui(ip,role):
-    set_job('running',f'Installing verified 3x-ui v2.9.4 on {role} {ip}'); scp_to(ip,REMOTE_XUI_INSTALLER,'/root/install-3xui-2.9.4.sh'); scp_to(ip,TEMPLATE_FILE,'/root/aegis-xui-template.db')
+    probe=("test -x /usr/local/x-ui/x-ui && "
+           "test -s /etc/x-ui/x-ui.db && "
+           "test \"$(/usr/local/x-ui/x-ui -v 2>/dev/null | tr -d '[:space:]')\" = '2.9.4' && "
+           "systemctl is-active --quiet x-ui && "
+           "timeout 2 bash -c 'exec 3<>/dev/tcp/127.0.0.1/443' >/dev/null 2>&1")
+    if ssh(ip,probe,20,False).returncode==0:
+        log(f'3x-ui v2.9.4 + Xray :443 already healthy on {role} {ip}; preserving existing DB/panel settings')
+        return
+    set_job('running',f'Installing verified 3x-ui v2.9.4 on {role} {ip}')
+    scp_to(ip,REMOTE_XUI_INSTALLER,'/root/install-3xui-2.9.4.sh')
+    scp_to(ip,TEMPLATE_FILE,'/root/aegis-xui-template.db')
     cp=ssh(ip,'chmod 700 /root/install-3xui-2.9.4.sh && bash /root/install-3xui-2.9.4.sh',420,False)
     if cp.returncode==20: raise RuntimeError(f'3x-ui installed on {ip}, but golden template did not provide Xray 127.0.0.1:443')
     if cp.returncode: raise RuntimeError(f'3x-ui v2.9.4 install failed on {ip}')
