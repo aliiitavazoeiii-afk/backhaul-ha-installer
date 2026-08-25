@@ -71,8 +71,15 @@ def sqlite_ok(p):
         c=sqlite3.connect(f'file:{p}?mode=ro',uri=True); r=c.execute('PRAGMA quick_check').fetchone(); c.close(); return bool(r and r[0]=='ok')
     except sqlite3.Error: return False
 def ensure_ssh_key():
-    if SSH_KEY.exists() and SSH_KEY.with_suffix('.pub').exists(): return
-    SSH_KEY.parent.mkdir(mode=0o700,parents=True,exist_ok=True); run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(SSH_KEY)],20)
+    pub=SSH_KEY.with_suffix('.pub')
+    SSH_KEY.parent.mkdir(mode=0o700,parents=True,exist_ok=True)
+    if SSH_KEY.exists():
+        if pub.exists(): return
+        cp=subprocess.run(['ssh-keygen','-y','-f',str(SSH_KEY)],text=True,capture_output=True,timeout=20)
+        if cp.returncode or not cp.stdout.strip(): raise RuntimeError('existing SSH private key is unreadable; public key could not be derived')
+        pub.write_text(cp.stdout.strip()+'\n'); os.chmod(pub,0o644); return
+    if pub.exists(): pub.rename(pub.with_name(pub.name+'.orphan-'+datetime.now().strftime('%Y%m%d%H%M%S')))
+    run(['ssh-keygen','-q','-t','ed25519','-N','','-f',str(SSH_KEY)],20)
 def capture_template(primary):
     set_job('running','Capturing golden 3x-ui template from primary')
     if not ssh_ready(primary): raise RuntimeError(f'SSH key access to primary {primary} is not ready')
