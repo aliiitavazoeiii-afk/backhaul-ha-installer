@@ -13,7 +13,8 @@ import (
 	"github.com/aliiitavazoeiii-afk/backhaul-ha-installer/aegis-tunnel/internal/ws"
 )
 
-const maxStreamsPerCarrier = 4096
+const maxStreamsPerCarrier = 1024
+const streamQueueDepth = 32
 
 type streamState struct {
 	id      uint32
@@ -24,20 +25,18 @@ type streamState struct {
 }
 
 func newStreamState(id uint32, conn net.Conn) *streamState {
-	s := &streamState{id: id, conn: conn, writeCh: make(chan []byte, 64), done: make(chan struct{})}
-	go s.writer()
-	return s
+	return &streamState{id: id, conn: conn, writeCh: make(chan []byte, streamQueueDepth), done: make(chan struct{})}
 }
+
+func (s *streamState) startWriter() { go s.writer() }
+
 func (s *streamState) writer() {
 	for {
 		select {
-		case b, ok := <-s.writeCh:
-			if !ok {
-				return
-			}
+		case b := <-s.writeCh:
 			_ = s.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 			if _, err := s.conn.Write(b); err != nil {
-				s.close()
+				s.stop(true)
 				return
 			}
 			_ = s.conn.SetWriteDeadline(time.Time{})
@@ -46,6 +45,7 @@ func (s *streamState) writer() {
 		}
 	}
 }
+
 func (s *streamState) enqueue(b []byte) bool {
 	cp := append([]byte(nil), b...)
 	select {
@@ -62,8 +62,14 @@ func (s *streamState) enqueue(b []byte) bool {
 		return false
 	}
 }
-func (s *streamState) close() {
-	s.once.Do(func() { close(s.done); _ = s.conn.Close() })
+
+func (s *streamState) stop(closeConn bool) {
+	s.once.Do(func() {
+		close(s.done)
+		if closeConn {
+			_ = s.conn.Close()
+		}
+	})
 }
 
 type carrier struct {
@@ -81,7 +87,9 @@ func newCarrier(id uint64, w *ws.Conn) *carrier {
 	c.touch()
 	return c
 }
+
 func (c *carrier) touch() { c.lastSeen.Store(time.Now().UnixNano()) }
+
 func (c *carrier) send(f proto.Frame) error {
 	b, err := proto.Encode(f)
 	if err != nil {
@@ -89,35 +97,45 @@ func (c *carrier) send(f proto.Frame) error {
 	}
 	return c.w.WriteBinary(b)
 }
+
 func (c *carrier) addStream(id uint32, conn net.Conn) (*streamState, error) {
-	s := newStreamState(id, conn)
 	c.streamsMu.Lock()
 	defer c.streamsMu.Unlock()
 	if len(c.streams) >= maxStreamsPerCarrier {
-		s.close()
 		return nil, errors.New("carrier stream limit reached")
 	}
 	if _, ok := c.streams[id]; ok {
-		s.close()
 		return nil, errors.New("duplicate stream id")
 	}
+	s := newStreamState(id, conn)
 	c.streams[id] = s
 	return s, nil
 }
+
 func (c *carrier) getStream(id uint32) *streamState {
 	c.streamsMu.RLock()
 	defer c.streamsMu.RUnlock()
 	return c.streams[id]
 }
+
 func (c *carrier) delStream(id uint32) {
+	c.removeStream(id, true)
+}
+
+func (c *carrier) detachStream(id uint32) {
+	c.removeStream(id, false)
+}
+
+func (c *carrier) removeStream(id uint32, closeConn bool) {
 	c.streamsMu.Lock()
 	s := c.streams[id]
 	delete(c.streams, id)
 	c.streamsMu.Unlock()
 	if s != nil {
-		s.close()
+		s.stop(closeConn)
 	}
 }
+
 func (c *carrier) close() {
 	c.closeOnce.Do(func() {
 		close(c.closed)
@@ -130,7 +148,7 @@ func (c *carrier) close() {
 		c.streams = make(map[uint32]*streamState)
 		c.streamsMu.Unlock()
 		for _, s := range ss {
-			s.close()
+			s.stop(true)
 		}
 	})
 }
