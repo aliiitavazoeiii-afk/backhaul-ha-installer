@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import json,secrets,threading
+import json,os,secrets,threading
 from http import cookies
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
@@ -7,11 +7,17 @@ from urllib.parse import parse_qs,urlparse
 import provision as p
 
 PORT=8787; UI=Path('/opt/aegis-dashboard/ui.html').read_text()
+PUBLIC_ORIGIN=os.getenv('AEGIS_PUBLIC_ORIGIN','').strip().rstrip('/')
+ALLOWED_ORIGINS={f'http://127.0.0.1:{PORT}',f'http://localhost:{PORT}'}
+if PUBLIC_ORIGIN:
+    ALLOWED_ORIGINS.add(PUBLIC_ORIGIN)
+SECURE_COOKIE='; Secure' if PUBLIC_ORIGIN.startswith('https://') else ''
+
 class H(BaseHTTPRequestHandler):
     server_version='AegisDashboard/1.0'
     def log_message(self,*a): pass
     def auth(self):
-        c=cookies.SimpleCookie();
+        c=cookies.SimpleCookie()
         try: c.load(self.headers.get('Cookie',''))
         except Exception: return False
         return bool(c.get('aegis_token') and secrets.compare_digest(c['aegis_token'].value,p.TOKEN))
@@ -24,7 +30,7 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         u=urlparse(self.path); q=parse_qs(u.query)
         if u.path=='/' and q.get('token') and secrets.compare_digest(q['token'][0],p.TOKEN):
-            self.send_response(302); self.send_header('Set-Cookie',f'aegis_token={p.TOKEN}; Path=/; HttpOnly; SameSite=Strict'); self.send_header('Location','/'); self.end_headers(); return
+            self.send_response(302); self.send_header('Set-Cookie',f'aegis_token={p.TOKEN}; Path=/; HttpOnly; SameSite=Strict{SECURE_COOKIE}'); self.send_header('Location','/'); self.send_header('Cache-Control','no-store'); self.end_headers(); return
         if not self.auth(): return self.js(403,{'error':'unauthorized'})
         if u.path=='/':
             b=UI.encode(); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Content-Length',str(len(b))); self.send_header('Cache-Control','no-store'); self.end_headers(); self.wfile.write(b); return
@@ -34,8 +40,8 @@ class H(BaseHTTPRequestHandler):
         self.js(404,{'error':'not found'})
     def do_POST(self):
         if not self.auth(): return self.js(403,{'error':'unauthorized'})
-        origin=self.headers.get('Origin','')
-        if origin and origin not in {f'http://127.0.0.1:{PORT}',f'http://localhost:{PORT}'}: return self.js(403,{'error':'origin rejected'})
+        origin=self.headers.get('Origin','').rstrip('/')
+        if origin and origin not in ALLOWED_ORIGINS: return self.js(403,{'error':'origin rejected'})
         try:
             cfg=p.validate_config(self.body()); s=p.load_state(); s['config']=cfg; p.save_state(s)
             if self.path=='/api/ssh-check': p.ensure_ssh_key(); return self.js(200,{'primary':p.ssh_ready(cfg['primary_ip']),'backup':p.ssh_ready(cfg['backup_ip'])})
