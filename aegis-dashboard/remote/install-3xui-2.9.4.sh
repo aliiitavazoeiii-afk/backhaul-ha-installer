@@ -78,6 +78,18 @@ if [[ -s "$TEMPLATE" ]]; then
   log 'restoring golden x-ui database template'
   sqlite3 "$TEMPLATE" 'PRAGMA quick_check;' | grep -qx 'ok' || die 'golden template failed SQLite quick_check'
   install -m 0600 "$TEMPLATE" "$DB"
+
+  # A golden DB may reference panel/subscription certificate files that only
+  # exist on the source node. Preserve valid local paths, but clear stale
+  # certificate settings before x-ui starts on a replacement node.
+  WEB_CERT="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='webCertFile' LIMIT 1;" 2>/dev/null || true)"
+  WEB_KEY="$(sqlite3 "$DB" "SELECT value FROM settings WHERE key='webKeyFile' LIMIT 1;" 2>/dev/null || true)"
+  if [[ -n "$WEB_CERT" || -n "$WEB_KEY" ]]; then
+    if [[ -z "$WEB_CERT" || -z "$WEB_KEY" || ! -s "$WEB_CERT" || ! -s "$WEB_KEY" ]]; then
+      log 'golden panel certificate paths are not valid on this node; clearing panel/subscription cert paths'
+      /usr/local/x-ui/x-ui cert -reset true >/dev/null 2>&1 || die 'failed to clear stale x-ui certificate paths'
+    fi
+  fi
 fi
 
 systemctl daemon-reload
@@ -94,7 +106,7 @@ if [[ ! -s "$TEMPLATE" ]]; then
   SHOW="$(/usr/local/x-ui/x-ui setting -show true 2>/dev/null || true)"
   if grep -q 'hasDefaultCredential: true' <<<"$SHOW"; then
     USER="aegis$(openssl rand -hex 4)"
-    PASS="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 20)"
+    PASS="$(openssl rand -hex 16)"
     PORT="$(shuf -i 20000-60000 -n 1)"
     PATHV="aegis$(openssl rand -hex 8)"
     /usr/local/x-ui/x-ui setting -username "$USER" -password "$PASS" -port "$PORT" -webBasePath "$PATHV" >/dev/null
