@@ -2,6 +2,7 @@ package ws
 
 import (
 	"bufio"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base64"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 const websocketGUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -26,14 +28,11 @@ const (
 	opPong         = 0xA
 )
 
-// Conn is a deliberately small RFC6455 implementation for binary tunnel frames.
-// It supports single-frame messages, ping/pong and close. Tunnel payloads are
-// capped by MaxPayload so fragmentation is not required.
 type Conn struct {
 	c          net.Conn
 	r          *bufio.Reader
 	writeMu    sync.Mutex
-	clientSide bool // clients MUST mask frames; servers MUST NOT.
+	clientSide bool
 	MaxPayload int
 }
 
@@ -57,7 +56,9 @@ func Accept(w http.ResponseWriter, r *http.Request, token, pathPrefix string) (*
 	if r.Header.Get("Sec-WebSocket-Version") != "13" {
 		return nil, errors.New("websocket: version 13 required")
 	}
-	if r.Header.Get("Authorization") != "Bearer "+token {
+	gotAuth := []byte(r.Header.Get("Authorization"))
+	wantAuth := []byte("Bearer " + token)
+	if len(gotAuth) != len(wantAuth) || !hmac.Equal(gotAuth, wantAuth) {
 		return nil, errors.New("websocket: unauthorized")
 	}
 	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
@@ -74,11 +75,11 @@ func Accept(w http.ResponseWriter, r *http.Request, token, pathPrefix string) (*
 	}
 	accept := websocketAccept(key)
 	if _, err := fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	if err := rw.Flush(); err != nil {
-		conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	return New(conn, rw.Reader, false), nil
@@ -125,7 +126,7 @@ func ClientHandshake(conn net.Conn, host, path, token, origin string) (*Conn, er
 
 func websocketAccept(key string) string {
 	h := sha1.New()
-	io.WriteString(h, key+websocketGUID)
+	_, _ = io.WriteString(h, key+websocketGUID)
 	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }
 
@@ -140,13 +141,15 @@ func headerHasToken(h http.Header, name, token string) bool {
 	return false
 }
 
-func (c *Conn) Close() error         { return c.c.Close() }
-func (c *Conn) RemoteAddr() net.Addr { return c.c.RemoteAddr() }
-
-func (c *Conn) WriteBinary(payload []byte) error { return c.writeFrame(opBinary, payload) }
-func (c *Conn) WritePing(payload []byte) error   { return c.writeFrame(opPing, payload) }
-func (c *Conn) WritePong(payload []byte) error   { return c.writeFrame(opPong, payload) }
-func (c *Conn) WriteClose() error                 { return c.writeFrame(opClose, nil) }
+func (c *Conn) Close() error                       { return c.c.Close() }
+func (c *Conn) RemoteAddr() net.Addr               { return c.c.RemoteAddr() }
+func (c *Conn) SetReadDeadline(t time.Time) error  { return c.c.SetReadDeadline(t) }
+func (c *Conn) SetWriteDeadline(t time.Time) error { return c.c.SetWriteDeadline(t) }
+func (c *Conn) SetDeadline(t time.Time) error      { return c.c.SetDeadline(t) }
+func (c *Conn) WriteBinary(payload []byte) error   { return c.writeFrame(opBinary, payload) }
+func (c *Conn) WritePing(payload []byte) error     { return c.writeFrame(opPing, payload) }
+func (c *Conn) WritePong(payload []byte) error     { return c.writeFrame(opPong, payload) }
+func (c *Conn) WriteClose() error                  { return c.writeFrame(opClose, nil) }
 
 func (c *Conn) writeFrame(op byte, payload []byte) error {
 	if c.MaxPayload > 0 && len(payload) > c.MaxPayload {

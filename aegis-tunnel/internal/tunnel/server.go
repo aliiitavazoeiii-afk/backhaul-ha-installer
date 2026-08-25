@@ -29,6 +29,8 @@ type Server struct {
 	nextStream  atomic.Uint32
 	rr          atomic.Uint64
 	listeners   []net.Listener
+	readyMu     sync.Mutex
+	readyLn     net.Listener
 }
 
 func LoadServerConfig(path string) (ServerConfig, error) {
@@ -70,7 +72,13 @@ func NewServer(c ServerConfig) *Server { return &Server{cfg: c} }
 func (s *Server) Run(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleHTTP)
-	s.httpServer = &http.Server{Addr: s.cfg.Bind, Handler: mux, ReadHeaderTimeout: 8 * time.Second, IdleTimeout: 90 * time.Second}
+	s.httpServer = &http.Server{
+		Addr:              s.cfg.Bind,
+		Handler:           mux,
+		ReadHeaderTimeout: 8 * time.Second,
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    16 << 10,
+	}
 
 	errCh := make(chan error, 1+len(s.cfg.Listeners))
 	go func() {
@@ -92,17 +100,25 @@ func (s *Server) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
-		for _, ln := range s.listeners {
-			_ = ln.Close()
-		}
-		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.httpServer.Shutdown(shutCtx)
-		s.closeAllSessions()
+		s.shutdown()
 		return nil
 	case err := <-errCh:
+		s.shutdown()
 		return err
 	}
+}
+
+func (s *Server) shutdown() {
+	for _, ln := range s.listeners {
+		_ = ln.Close()
+	}
+	s.setReadiness(false)
+	if s.httpServer != nil {
+		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = s.httpServer.Shutdown(shutCtx)
+		cancel()
+	}
+	s.closeAllSessions()
 }
 
 func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -116,10 +132,9 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	wc.MaxPayload = proto.HeaderSize + proto.MaxData
+	_ = wc.SetReadDeadline(time.Now().Add(10 * time.Second))
 	id := s.nextSession.Add(1)
 	c := newCarrier(id, wc)
-	// First binary message is a version hello. This catches accidental clients
-	// without depending on a Backhaul-compatible control channel.
 	b, err := wc.ReadBinary()
 	if err != nil {
 		c.close()
@@ -130,6 +145,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		c.close()
 		return
 	}
+	_ = wc.SetReadDeadline(time.Time{})
 	if !s.addSession(c) {
 		c.close()
 		log.Printf("carrier %d rejected: carrier limit reached", id)
@@ -145,16 +161,18 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) addSession(c *carrier) bool {
 	s.sessionsMu.Lock()
-	defer s.sessionsMu.Unlock()
 	if len(s.sessions) >= maxServerCarriers {
+		s.sessionsMu.Unlock()
 		return false
 	}
 	s.sessions = append(s.sessions, c)
+	s.sessionsMu.Unlock()
+	s.syncReadiness()
 	return true
 }
+
 func (s *Server) removeSession(c *carrier) {
 	s.sessionsMu.Lock()
-	defer s.sessionsMu.Unlock()
 	out := s.sessions[:0]
 	for _, x := range s.sessions {
 		if x != c {
@@ -162,7 +180,10 @@ func (s *Server) removeSession(c *carrier) {
 		}
 	}
 	s.sessions = out
+	s.sessionsMu.Unlock()
+	s.syncReadiness()
 }
+
 func (s *Server) closeAllSessions() {
 	s.sessionsMu.Lock()
 	ss := append([]*carrier(nil), s.sessions...)
@@ -171,15 +192,93 @@ func (s *Server) closeAllSessions() {
 	for _, c := range ss {
 		c.close()
 	}
+	s.syncReadiness()
 }
-func (s *Server) chooseSession() *carrier {
+
+func (s *Server) syncReadiness() {
 	s.sessionsMu.RLock()
-	defer s.sessionsMu.RUnlock()
-	if len(s.sessions) == 0 {
-		return nil
+	ready := len(s.sessions) > 0
+	s.sessionsMu.RUnlock()
+	s.setReadiness(ready)
+}
+
+func (s *Server) setReadiness(ready bool) {
+	if s.cfg.ReadinessListen == "" {
+		return
 	}
-	n := s.rr.Add(1)
-	return s.sessions[int(n%uint64(len(s.sessions)))]
+	s.readyMu.Lock()
+	defer s.readyMu.Unlock()
+	if ready {
+		if s.readyLn != nil {
+			return
+		}
+		ln, err := net.Listen("tcp", s.cfg.ReadinessListen)
+		if err != nil {
+			log.Printf("readiness listen %s failed: %v", s.cfg.ReadinessListen, err)
+			return
+		}
+		s.readyLn = ln
+		log.Printf("readiness UP on %s", s.cfg.ReadinessListen)
+		go s.acceptReadiness(ln)
+		return
+	}
+	if s.readyLn != nil {
+		ln := s.readyLn
+		s.readyLn = nil
+		_ = ln.Close()
+		log.Printf("readiness DOWN on %s", s.cfg.ReadinessListen)
+	}
+}
+
+func (s *Server) acceptReadiness(ln net.Listener) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		_ = conn.Close()
+	}
+}
+
+func (s *Server) sessionCandidates() []*carrier {
+	s.sessionsMu.RLock()
+	ss := append([]*carrier(nil), s.sessions...)
+	s.sessionsMu.RUnlock()
+	if len(ss) < 2 {
+		return ss
+	}
+	start := int(s.rr.Add(1) % uint64(len(ss)))
+	out := make([]*carrier, 0, len(ss))
+	out = append(out, ss[start:]...)
+	out = append(out, ss[:start]...)
+	return out
+}
+
+func (s *Server) nextStreamID() uint32 {
+	for {
+		id := s.nextStream.Add(1)
+		if id != 0 {
+			return id
+		}
+	}
+}
+
+func (s *Server) openLocalStream(conn net.Conn, targetID uint16) (*carrier, uint32, bool) {
+	for _, c := range s.sessionCandidates() {
+		sid := s.nextStreamID()
+		st, err := c.addStream(sid, conn)
+		if err != nil {
+			continue
+		}
+		if err := c.send(proto.Frame{Type: proto.TypeOpen, StreamID: sid, TargetID: targetID}); err != nil {
+			c.detachStream(sid)
+			c.close()
+			continue
+		}
+		st.startWriter()
+		return c, sid, true
+	}
+	return nil, 0, false
 }
 
 func (s *Server) acceptLocal(ctx context.Context, ln net.Listener, lc ListenerConfig) error {
@@ -193,21 +292,9 @@ func (s *Server) acceptLocal(ctx context.Context, ln net.Listener, lc ListenerCo
 				return err
 			}
 		}
-		c := s.chooseSession()
-		if c == nil {
+		c, sid, ok := s.openLocalStream(conn, lc.TargetID)
+		if !ok {
 			_ = conn.Close()
-			continue
-		}
-		sid := s.nextStream.Add(1)
-		if sid == 0 {
-			sid = s.nextStream.Add(1)
-		}
-		if _, err := c.addStream(sid, conn); err != nil {
-			_ = conn.Close()
-			continue
-		}
-		if err := c.send(proto.Frame{Type: proto.TypeOpen, StreamID: sid, TargetID: lc.TargetID}); err != nil {
-			c.delStream(sid)
 			continue
 		}
 		go copyConnToCarrier(c, sid, conn)
@@ -215,7 +302,11 @@ func (s *Server) acceptLocal(ctx context.Context, ln net.Listener, lc ListenerCo
 }
 
 func (s *Server) readSession(c *carrier) {
+	readWindow := 3*s.cfg.keepAlive() + 2*time.Second
 	for {
+		if err := c.w.SetReadDeadline(time.Now().Add(readWindow)); err != nil {
+			return
+		}
 		b, err := c.w.ReadBinary()
 		if err != nil {
 			return

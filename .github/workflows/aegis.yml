@@ -2,7 +2,7 @@ name: Aegis Tunnel
 
 on:
   push:
-    branches: ["agent/aegis-production"]
+    branches: ["agent/aegis-production", "agent/aegis-single-failover"]
     paths:
       - "aegis-tunnel/**"
       - ".github/workflows/aegis.yml"
@@ -24,14 +24,20 @@ jobs:
           go-version: '1.23.x'
           cache-dependency-path: aegis-tunnel/go.mod
       - name: Format check
-        run: test -z "$(gofmt -l .)"
+        run: |
+          bad="$(gofmt -l .)"
+          if [ -n "$bad" ]; then
+            echo "The following Go files need gofmt:"
+            echo "$bad"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Race integration tests
-        run: go test ./... -race -count=1
+        run: go test ./... -race -count=1 -timeout=60s
       - name: Static build
         env:
           CGO_ENABLED: '0'
         run: go build -trimpath -ldflags='-s -w' -o /tmp/aegis ./cmd/aegis
       - name: Smoke version
-        run: /tmp/aegis -version | grep -Fx '0.1.0'
+        run: /tmp/aegis -version | grep -Fx '0.2.0'

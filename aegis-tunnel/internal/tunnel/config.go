@@ -17,22 +17,25 @@ type ServerConfig struct {
 	Token            string           `json:"token"`
 	PathPrefix       string           `json:"path_prefix"`
 	KeepAliveSeconds int              `json:"keepalive_seconds"`
+	ReadinessListen  string           `json:"readiness_listen"`
 	Listeners        []ListenerConfig `json:"listeners"`
 }
 
 type ClientConfig struct {
-	RemoteAddr       string         `json:"remote_addr"`
-	EdgeIP           string         `json:"edge_ip"`
-	Scheme           string         `json:"scheme"`
-	TLSServerName    string         `json:"tls_server_name"`
-	TLSSkipVerify    bool           `json:"tls_skip_verify"`
-	Token            string         `json:"token"`
-	PathPrefix       string         `json:"path_prefix"`
-	Origin           string         `json:"origin"`
-	Pool             int            `json:"pool"`
-	DialTimeoutSec   int            `json:"dial_timeout_seconds"`
-	KeepAliveSeconds int            `json:"keepalive_seconds"`
-	Targets          []TargetConfig `json:"targets"`
+	RemoteAddr        string         `json:"remote_addr"`
+	EdgeIP            string         `json:"edge_ip"`
+	Scheme            string         `json:"scheme"`
+	TLSServerName     string         `json:"tls_server_name"`
+	TLSSkipVerify     bool           `json:"tls_skip_verify"`
+	Token             string         `json:"token"`
+	PathPrefix        string         `json:"path_prefix"`
+	Origin            string         `json:"origin"`
+	Pool              int            `json:"pool"`
+	DialTimeoutSec    int            `json:"dial_timeout_seconds"`
+	KeepAliveSeconds  int            `json:"keepalive_seconds"`
+	HealthTarget      string         `json:"health_target"`
+	HealthIntervalSec int            `json:"health_interval_seconds"`
+	Targets           []TargetConfig `json:"targets"`
 }
 
 func (c ServerConfig) keepAlive() time.Duration {
@@ -41,15 +44,24 @@ func (c ServerConfig) keepAlive() time.Duration {
 	}
 	return time.Duration(c.KeepAliveSeconds) * time.Second
 }
+
 func (c ClientConfig) keepAlive() time.Duration {
 	if c.KeepAliveSeconds <= 0 {
 		return 25 * time.Second
 	}
 	return time.Duration(c.KeepAliveSeconds) * time.Second
 }
+
 func (c ClientConfig) dialTimeout() time.Duration {
 	if c.DialTimeoutSec <= 0 {
 		return 10 * time.Second
 	}
 	return time.Duration(c.DialTimeoutSec) * time.Second
+}
+
+func (c ClientConfig) healthInterval() time.Duration {
+	if c.HealthIntervalSec <= 0 {
+		return 2 * time.Second
+	}
+	return time.Duration(c.HealthIntervalSec) * time.Second
 }
