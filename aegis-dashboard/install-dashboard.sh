@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-CODE_PIN='42c54b4ac3cb58f4010e466bf1a90db373820002'
-AEGIS_PIN='ef0e8a44065ca537c976858c9f9ae8f7a503313c'
+CODE_PIN='b1ace0282a26be1b8c2eef4f7207c510374e4a87'
+PANEL_PIN='91e8efd917894b8a6f8c53492de1e8a6dbda6671'
 BACKUP_PIN='2be6343fb6af4e99d5c019eaf698e06047388b73'
 REPO='aliiitavazoeiii-afk/backhaul-ha-installer'
 BASE="https://raw.githubusercontent.com/${REPO}/${CODE_PIN}"
@@ -30,7 +30,7 @@ if [[ -d "$APP_DIR" ]]; then
   log "Previous dashboard files backed up to $BACKUP_ROOT/$stamp"
 fi
 
-install -d -m 0755 "$APP_DIR/remote" "$APP_DIR/vendor"
+install -d -m 0755 "$APP_DIR/remote" "$APP_DIR/vendor" /usr/local/sbin
 fetch(){
   local url="$1" dst="$2"
   curl -fL --retry 3 --connect-timeout 10 "$url" -o "$dst"
@@ -40,15 +40,17 @@ fetch "$BASE/aegis-dashboard/app.py" "$APP_DIR/app.py"
 fetch "$BASE/aegis-dashboard/provision.py" "$APP_DIR/provision.py"
 fetch "$BASE/aegis-dashboard/ui.html" "$APP_DIR/ui.html"
 fetch "$BASE/aegis-dashboard/remote/install-3xui-2.9.4.sh" "$APP_DIR/remote/install-3xui-2.9.4.sh"
-fetch "https://raw.githubusercontent.com/${REPO}/${AEGIS_PIN}/aegis-single/install.sh" "$APP_DIR/vendor/install-aegis-single.sh"
+fetch "https://raw.githubusercontent.com/${REPO}/${PANEL_PIN}/aegis-dashboard/install-aegis-wrapper.sh" "$APP_DIR/vendor/install-aegis-single.sh"
+fetch "https://raw.githubusercontent.com/${REPO}/${PANEL_PIN}/aegis-dashboard/public-route.sh" /usr/local/sbin/aegis-dashboard-public-route
 fetch "https://raw.githubusercontent.com/${REPO}/${BACKUP_PIN}/aegis-single/add-direct-backup.sh" "$APP_DIR/vendor/add-direct-backup.sh"
 
 python3 -m py_compile "$APP_DIR/app.py" "$APP_DIR/provision.py"
 bash -n "$APP_DIR/remote/install-3xui-2.9.4.sh"
 bash -n "$APP_DIR/vendor/install-aegis-single.sh"
 bash -n "$APP_DIR/vendor/add-direct-backup.sh"
+bash -n /usr/local/sbin/aegis-dashboard-public-route
 chmod 0644 "$APP_DIR/app.py" "$APP_DIR/provision.py" "$APP_DIR/ui.html"
-chmod 0755 "$APP_DIR/remote/install-3xui-2.9.4.sh" "$APP_DIR/vendor/install-aegis-single.sh" "$APP_DIR/vendor/add-direct-backup.sh"
+chmod 0755 "$APP_DIR/remote/install-3xui-2.9.4.sh" "$APP_DIR/vendor/install-aegis-single.sh" "$APP_DIR/vendor/add-direct-backup.sh" /usr/local/sbin/aegis-dashboard-public-route
 
 cat > "$SERVICE" <<'UNIT'
 [Unit]
