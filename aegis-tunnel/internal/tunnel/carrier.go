@@ -15,6 +15,7 @@ import (
 
 const maxStreamsPerCarrier = 1024
 const streamQueueDepth = 32
+const carrierWriteTimeout = 8 * time.Second
 
 type streamState struct {
 	id      uint32
@@ -95,7 +96,12 @@ func (c *carrier) send(f proto.Frame) error {
 	if err != nil {
 		return err
 	}
-	return c.w.WriteBinary(b)
+	if err := c.w.SetWriteDeadline(time.Now().Add(carrierWriteTimeout)); err != nil {
+		return err
+	}
+	err = c.w.WriteBinary(b)
+	_ = c.w.SetWriteDeadline(time.Time{})
+	return err
 }
 
 func (c *carrier) addStream(id uint32, conn net.Conn) (*streamState, error) {
