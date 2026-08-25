@@ -19,12 +19,19 @@ jobs:
       - name: Python compile
         run: python3 -m py_compile aegis-dashboard/app.py aegis-dashboard/provision.py
       - name: Bash syntax
-        run: bash -n aegis-dashboard/remote/install-3xui-2.9.4.sh
+        run: |
+          bash -n aegis-dashboard/install-dashboard.sh
+          bash -n aegis-dashboard/remote/install-3xui-2.9.4.sh
       - name: Verify pinned 3x-ui release
         run: |
           grep -Fq "VERSION='v2.9.4'" aegis-dashboard/remote/install-3xui-2.9.4.sh
           grep -Fq "ffff36ba6750b62e54bba3ec771e003d2bded9bbda30ae0d960d5599235d4ee7" aegis-dashboard/remote/install-3xui-2.9.4.sh
           grep -Fq "5dbf2abdbe8199acf1d3684ed8d0dce337336a5bd12d903273b690ed48e11b29" aegis-dashboard/remote/install-3xui-2.9.4.sh
+      - name: Verify immutable controller pins
+        run: |
+          grep -Fq "CODE_PIN='dd43ce878ea2fccd743ba764d76e709007fc102a'" aegis-dashboard/install-dashboard.sh
+          grep -Fq "AEGIS_PIN='ef0e8a44065ca537c976858c9f9ae8f7a503313c'" aegis-dashboard/install-dashboard.sh
+          grep -Fq "BACKUP_PIN='2be6343fb6af4e99d5c019eaf698e06047388b73'" aegis-dashboard/install-dashboard.sh
       - name: Static dashboard invariants
         run: |
           grep -Fq "127.0.0.1',PORT" aegis-dashboard/app.py
