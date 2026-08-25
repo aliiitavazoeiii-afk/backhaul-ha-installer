@@ -29,7 +29,7 @@ jobs:
           grep -Fq "5dbf2abdbe8199acf1d3684ed8d0dce337336a5bd12d903273b690ed48e11b29" aegis-dashboard/remote/install-3xui-2.9.4.sh
       - name: Verify immutable controller pins
         run: |
-          grep -Fq "CODE_PIN='dd43ce878ea2fccd743ba764d76e709007fc102a'" aegis-dashboard/install-dashboard.sh
+          grep -Fq "CODE_PIN='42c54b4ac3cb58f4010e466bf1a90db373820002'" aegis-dashboard/install-dashboard.sh
           grep -Fq "AEGIS_PIN='ef0e8a44065ca537c976858c9f9ae8f7a503313c'" aegis-dashboard/install-dashboard.sh
           grep -Fq "BACKUP_PIN='2be6343fb6af4e99d5c019eaf698e06047388b73'" aegis-dashboard/install-dashboard.sh
       - name: Static dashboard invariants
