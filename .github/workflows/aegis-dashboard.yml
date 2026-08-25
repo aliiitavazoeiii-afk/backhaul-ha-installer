@@ -1,0 +1,33 @@
+name: Aegis Dashboard
+
+on:
+  push:
+    branches: ["agent/aegis-single-release"]
+    paths:
+      - "aegis-dashboard/**"
+      - ".github/workflows/aegis-dashboard.yml"
+  pull_request:
+    paths:
+      - "aegis-dashboard/**"
+      - ".github/workflows/aegis-dashboard.yml"
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python compile
+        run: python3 -m py_compile aegis-dashboard/app.py aegis-dashboard/provision.py
+      - name: Bash syntax
+        run: bash -n aegis-dashboard/remote/install-3xui-2.9.4.sh
+      - name: Verify pinned 3x-ui release
+        run: |
+          grep -Fq "VERSION='v2.9.4'" aegis-dashboard/remote/install-3xui-2.9.4.sh
+          grep -Fq "ffff36ba6750b62e54bba3ec771e003d2bded9bbda30ae0d960d5599235d4ee7" aegis-dashboard/remote/install-3xui-2.9.4.sh
+          grep -Fq "5dbf2abdbe8199acf1d3684ed8d0dce337336a5bd12d903273b690ed48e11b29" aegis-dashboard/remote/install-3xui-2.9.4.sh
+      - name: Static dashboard invariants
+        run: |
+          grep -Fq "127.0.0.1',PORT" aegis-dashboard/app.py
+          grep -Fq "BatchMode=yes" aegis-dashboard/provision.py
+          grep -Fq "backup_ip" aegis-dashboard/provision.py
+          grep -Fq "continuous user-sync is not enabled" aegis-dashboard/ui.html
