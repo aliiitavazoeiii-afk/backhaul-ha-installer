@@ -2,7 +2,7 @@ name: Aegis Tunnel
 
 on:
   push:
-    branches: ["agent/aegis-production"]
+    branches: ["agent/aegis-production", "agent/aegis-single-failover"]
     paths:
       - "aegis-tunnel/**"
       - ".github/workflows/aegis.yml"
@@ -28,10 +28,10 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Race integration tests
-        run: go test ./... -race -count=1
+        run: go test ./... -race -count=1 -timeout=60s
       - name: Static build
         env:
           CGO_ENABLED: '0'
         run: go build -trimpath -ldflags='-s -w' -o /tmp/aegis ./cmd/aegis
       - name: Smoke version
-        run: /tmp/aegis -version | grep -Fx '0.1.0'
+        run: /tmp/aegis -version | grep -Fx '0.2.0'
