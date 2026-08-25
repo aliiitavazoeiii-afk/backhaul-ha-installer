@@ -24,7 +24,13 @@ jobs:
           go-version: '1.23.x'
           cache-dependency-path: aegis-tunnel/go.mod
       - name: Format check
-        run: test -z "$(gofmt -l .)"
+        run: |
+          bad="$(gofmt -l .)"
+          if [ -n "$bad" ]; then
+            echo "The following Go files need gofmt:"
+            echo "$bad"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Race integration tests
