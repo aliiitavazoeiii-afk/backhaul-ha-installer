@@ -502,8 +502,8 @@ EOFSTATE
   systemctl enable --now aegis-client >/dev/null
   sleep 3
   systemctl is-active --quiet aegis-client || die 'aegis-client failed to start.'
-  local connected=0 i
-  for i in {1..12}; do
+  local connected=0
+  for _ in {1..12}; do
     if ss -Hntp 2>/dev/null | grep -Fq "${IRAN_IP}:443"; then
       connected=1
       break
