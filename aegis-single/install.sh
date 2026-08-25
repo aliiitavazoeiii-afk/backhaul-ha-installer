@@ -68,7 +68,8 @@ backup_file(){
 }
 
 make_backup_dir(){
-  local d="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
+  local d
+  d="${BACKUP_ROOT}/$(date +%Y%m%d-%H%M%S)"
   install -d -m 0700 "$d"
   printf '%s' "$d"
 }
