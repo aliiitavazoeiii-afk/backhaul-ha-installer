@@ -42,6 +42,12 @@ apt-get install -y nginx haproxy certbot python3 curl ca-certificates openssl >/
 install -d -m 0700 /etc/aegis-dashboard
 install -d -m 0755 "$APP_DIR/vendor" /var/www/aegis-panel-acme /usr/local/sbin
 
+# ACME HTTP-01 requires inbound TCP/80 before Certbot runs.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+  ufw allow 80/tcp >/dev/null || true
+  ufw allow 443/tcp >/dev/null || true
+fi
+
 # Unknown public :443 listeners are not replaced.
 if ss -Hlnpt 2>/dev/null | awk '$4 ~ /:443$/ {print}' | grep -q .; then
   listeners="$(ss -Hlnpt 2>/dev/null | awk '$4 ~ /:443$/ {print}')"
@@ -98,6 +104,9 @@ nginx -t >/dev/null
 systemctl enable nginx >/dev/null 2>&1 || true
 systemctl restart nginx
 
+# Verify the local HTTP listener exists before attempting ACME.
+ss -Hlnpt 2>/dev/null | awk '$4 ~ /:80$/ {found=1} END{exit !found}' || die 'nginx is not listening on TCP/80 after configuration'
+
 if [[ ! -s "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" || ! -s "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" ]]; then
   certbot certonly --webroot -w /var/www/aegis-panel-acme -d "$DOMAIN" --agree-tos --register-unsafely-without-email --non-interactive
 fi
@@ -111,11 +120,6 @@ chmod 0755 /etc/letsencrypt/renewal-hooks/deploy/aegis-dashboard-public
 systemctl daemon-reload
 systemctl restart aegis-dashboard
 "$ROUTE"
-
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  ufw allow 80/tcp >/dev/null || true
-  ufw allow 443/tcp >/dev/null || true
-fi
 
 sleep 2
 systemctl is-active --quiet aegis-dashboard || die 'dashboard service is not active'
