@@ -2,6 +2,8 @@
 
 Aegis-T is a reverse TCP/TLS transport designed for networks where UDP/QUIC is unreliable and multiplexing many user streams over a few TCP carriers causes cross-stream head-of-line blocking.
 
+> Status: canary. Source-level CI must pass before deployment, and a fresh Iran/Foreign live test is required before production use.
+
 ## Core rule
 
 **One active user TCP connection consumes one dedicated carrier TCP connection.**
