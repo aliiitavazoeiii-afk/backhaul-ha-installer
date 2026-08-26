@@ -2,7 +2,6 @@
 set -Eeuo pipefail
 umask 077
 
-VERSION="1.0.0-canary"
 REPO="aliiitavazoeiii-afk/backhaul-ha-installer"
 ENGINE_REF="a1449de47fe13a20aacfe22e56412a4e50f9854a"
 GO_VERSION="1.27.0"
