@@ -1,0 +1,43 @@
+name: Aegis-T
+
+on:
+  push:
+    branches:
+      - agent/aegis-t-v1
+    paths:
+      - 'aegis-t/**'
+      - '.github/workflows/aegis-t.yml'
+  pull_request:
+    paths:
+      - 'aegis-t/**'
+      - '.github/workflows/aegis-t.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache-dependency-path: aegis-t/go.sum
+      - name: Format
+        working-directory: aegis-t
+        run: |
+          test -z "$(gofmt -l .)"
+      - name: Vet
+        working-directory: aegis-t
+        run: go vet ./...
+      - name: Test with race detector
+        working-directory: aegis-t
+        run: go test ./... -race -count=1 -timeout=60s
+      - name: Build
+        working-directory: aegis-t
+        run: |
+          go build -trimpath -o /tmp/aegis-t ./cmd/aegis-t
+          test "$(/tmp/aegis-t -version)" = "1.0.0"
