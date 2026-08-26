@@ -3,6 +3,7 @@ name: Aegis-T
 on:
   push:
     branches:
+      - main
       - agent/aegis-t-v1
     paths:
       - 'aegis-t/**'
@@ -25,18 +26,25 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.23.x'
-          cache-dependency-path: aegis-t/go.sum
-      - name: Format
-        working-directory: aegis-t
+          cache: false
+      - name: Detect Aegis-T source
+        id: source
         run: |
-          test -z "$(gofmt -l .)"
+          if [ -d aegis-t ]; then echo 'present=true' >> "$GITHUB_OUTPUT"; else echo 'present=false' >> "$GITHUB_OUTPUT"; fi
+      - name: Format
+        if: steps.source.outputs.present == 'true'
+        working-directory: aegis-t
+        run: test -z "$(gofmt -l .)"
       - name: Vet
+        if: steps.source.outputs.present == 'true'
         working-directory: aegis-t
         run: go vet ./...
       - name: Test with race detector
+        if: steps.source.outputs.present == 'true'
         working-directory: aegis-t
         run: go test ./... -race -count=1 -timeout=60s
-      - name: Build
+      - name: Build and verify version
+        if: steps.source.outputs.present == 'true'
         working-directory: aegis-t
         run: |
           go build -trimpath -o /tmp/aegis-t ./cmd/aegis-t
