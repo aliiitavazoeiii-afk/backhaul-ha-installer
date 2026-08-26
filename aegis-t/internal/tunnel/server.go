@@ -122,7 +122,7 @@ func (s *Server) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tuneTLSUnderlying(conn)
-	if _, err := rw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n"); err != nil {
+	if _, err := rw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: 0\r\nCache-Control: no-store\r\nConnection: keep-alive\r\n\r\n"); err != nil {
 		_ = conn.Close()
 		return
 	}
