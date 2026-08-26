@@ -19,3 +19,27 @@ jobs:
           # already contain known ShellCheck warnings. The installed, validated
           # diagnostics path is generated/upgraded by custom-backhaul scripts.
           ignore_names: 'doctor.sh diagnose.sh doctor3.sh'
+      - name: Set up Go for Aegis-T
+        if: hashFiles('aegis-t/go.mod') != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+      - name: Aegis-T format gate
+        if: hashFiles('aegis-t/go.mod') != ''
+        working-directory: aegis-t
+        run: test -z "$(gofmt -l .)"
+      - name: Aegis-T vet
+        if: hashFiles('aegis-t/go.mod') != ''
+        working-directory: aegis-t
+        run: go vet ./...
+      - name: Aegis-T tests
+        if: hashFiles('aegis-t/go.mod') != ''
+        working-directory: aegis-t
+        run: go test ./... -race -count=1 -timeout=60s
+      - name: Aegis-T build
+        if: hashFiles('aegis-t/go.mod') != ''
+        working-directory: aegis-t
+        run: |
+          CGO_ENABLED=0 go build -trimpath -o /tmp/aegis-t ./cmd/aegis-t
+          test "$(/tmp/aegis-t -version)" = "1.0.0"
