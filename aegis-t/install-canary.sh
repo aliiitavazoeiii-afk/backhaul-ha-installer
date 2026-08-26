@@ -4,8 +4,8 @@ umask 077
 
 REPO="aliiitavazoeiii-afk/backhaul-ha-installer"
 ENGINE_REF="a1449de47fe13a20aacfe22e56412a4e50f9854a"
-GO_VERSION="1.27.0"
-GO_SHA256_AMD64="675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685"
+GO_VERSION="1.26.5"
+GO_SHA256_AMD64="5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053"
 DEFAULT_FOREIGN_IP="31.57.26.176"
 CARRIER_PORT="443"
 USER_TEST_PORT="24443"
@@ -260,23 +260,7 @@ ssh ${SSH_OPTS[*]} root@${FOREIGN_IP} 'systemctl is-active aegis-t-client; ss -t
 EOF2
 chmod 0755 /usr/local/sbin/aegis-t-status
 
-cat > /usr/local/sbin/aegis-t-uninstall-canary <<EOF2
-#!/usr/bin/env bash
-set -Eeuo pipefail
-systemctl disable --now aegis-t-server.service 2>/dev/null || true
-rm -f /etc/systemd/system/aegis-t-server.service
-systemctl daemon-reload
-ssh ${SSH_OPTS[*]} root@${FOREIGN_IP} 'systemctl disable --now aegis-t-client.service 2>/dev/null || true; rm -f /etc/systemd/system/aegis-t-client.service /opt/aegis-t/client.json /usr/local/bin/aegis-t; systemctl daemon-reload'
-rm -f /usr/local/bin/aegis-t /usr/local/sbin/aegis-t-status /usr/local/sbin/aegis-t-uninstall-canary
-rm -rf /opt/aegis-t
-EOF2
-chmod 0755 /usr/local/sbin/aegis-t-uninstall-canary
-
-log "CANARY READY"
-echo "Iran carrier TLS :$CARRIER_PORT"
-echo "Iran user test port :$USER_TEST_PORT"
-echo "Foreign target      127.0.0.1:443"
-echo "Status command      aegis-t-status"
-echo "Uninstall command   aegis-t-uninstall-canary"
-echo
-echo "Next: create ONE test VPN config using Iran IP $IRAN_IP and port $USER_TEST_PORT, then test before moving any users."
+log "Aegis-T canary is READY."
+echo "Test endpoint: ${IRAN_IP}:${USER_TEST_PORT}"
+echo "Carrier: ${DOMAIN}:${CARRIER_PORT} -> ${FOREIGN_IP} -> 127.0.0.1:443"
+echo "Status: aegis-t-status"
