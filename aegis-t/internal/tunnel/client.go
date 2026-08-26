@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -13,8 +14,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"crypto/tls"
 )
 
 type Client struct {
@@ -133,7 +132,8 @@ func (c *Client) worker(ctx context.Context, slot int) {
 	}
 }
 
-func (c *Client) connectCarrier(ctx context.Context) (net.Conn, *bufio.Reader, error) {ihost, port, err := net.SplitHostPort(c.cfg.RemoteAddr)
+func (c *Client) connectCarrier(ctx context.Context) (net.Conn, *bufio.Reader, error) {
+	host, port, err := net.SplitHostPort(c.cfg.RemoteAddr)
 	if err != nil {
 		return nil, nil, err
 	}
