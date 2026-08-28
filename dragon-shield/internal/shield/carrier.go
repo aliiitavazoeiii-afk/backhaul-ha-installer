@@ -67,6 +67,14 @@ func (c *wsCarrier) Close() error {
 	return c.conn.Close(websocket.StatusNormalClosure, "")
 }
 
+func transportServer(server string) string {
+	host, _, err := net.SplitHostPort(server)
+	if err != nil {
+		return net.JoinHostPort(server, webSocketFallbackPort)
+	}
+	return net.JoinHostPort(host, webSocketFallbackPort)
+}
+
 func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 	headers, err := newAuthHeaders(cfg.ClientID, cfg.Token, cfg.WebTransportPath)
 	if err != nil {
@@ -85,7 +93,7 @@ func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 			HandshakeIdleTimeout:             5 * time.Second,
 		},
 	}
-	url := "https://" + cfg.Server + cfg.WebTransportPath
+	url := "https://" + transportServer(cfg.Server) + cfg.WebTransportPath
 	rsp, sess, err := tr.Dial(ctx, url, headers)
 	if err != nil {
 		_ = tr.Close()
@@ -99,20 +107,12 @@ func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 	return &wtCarrier{sess: sess, tr: tr}, nil
 }
 
-func webSocketFallbackServer(server string) string {
-	host, _, err := net.SplitHostPort(server)
-	if err != nil {
-		return net.JoinHostPort(server, webSocketFallbackPort)
-	}
-	return net.JoinHostPort(host, webSocketFallbackPort)
-}
-
 func dialWebSocket(ctx context.Context, cfg ClientConfig) (carrier, error) {
 	headers, err := newAuthHeaders(cfg.ClientID, cfg.Token, cfg.WebSocketPath)
 	if err != nil {
 		return nil, err
 	}
-	url := "wss://" + webSocketFallbackServer(cfg.Server) + cfg.WebSocketPath
+	url := "wss://" + transportServer(cfg.Server) + cfg.WebSocketPath
 	conn, rsp, err := websocket.Dial(ctx, url, &websocket.DialOptions{
 		HTTPHeader:      headers,
 		CompressionMode: websocket.CompressionDisabled,
