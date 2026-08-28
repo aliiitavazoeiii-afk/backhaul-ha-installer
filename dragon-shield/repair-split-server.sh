@@ -123,7 +123,7 @@ WantedBy=multi-user.target
 UNIT
 
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-  ufw allow 443/udp >/dev/null || true
+  ufw allow 8443/udp >/dev/null || true
   ufw allow 8443/tcp >/dev/null || true
   ufw allow 80/tcp >/dev/null || true
 fi
@@ -165,7 +165,7 @@ printf '%s\n' "$ENROLL" >"/root/dragon-shield-enroll-${CLIENT_ID}.txt"
 chmod 0600 "/root/dragon-shield-enroll-${CLIENT_ID}.txt"
 
 log "server is running"
-echo "QUIC/WebTransport: UDP/443"
+echo "QUIC/WebTransport: UDP/8443"
 echo "WSS fallback:       TCP/8443"
 echo "TCP/443:            untouched (available for Xray)"
 echo
