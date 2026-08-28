@@ -69,6 +69,14 @@ func (r *peerRegistry) getByIP(ip net.IP) *peer {
 	return p
 }
 
+func fallbackTCPListenAddr(listen string) string {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return ":" + webSocketFallbackPort
+	}
+	return net.JoinHostPort(host, webSocketFallbackPort)
+}
+
 func RunServer(cfg ServerConfig) error {
 	clients := make(map[string]ServerClient, len(cfg.Clients))
 	allowedIPs := make(map[string]struct{}, len(cfg.Clients))
@@ -143,8 +151,9 @@ func RunServer(cfg ServerConfig) error {
 		go servePeer(tun, serverIP, cl, &wsCarrier{conn: conn}, registry, cfg.MTU)
 	})
 	tcpMux.HandleFunc("/", landingHandler)
+	fallbackListen := fallbackTCPListenAddr(cfg.Listen)
 	tcpServer := &http.Server{
-		Addr:              cfg.Listen,
+		Addr:              fallbackListen,
 		Handler:           tcpMux,
 		TLSConfig:         baseTLS.Clone(),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -157,7 +166,7 @@ func RunServer(cfg ServerConfig) error {
 		errCh <- wtServer.ListenAndServe()
 	}()
 	go func() {
-		log.Printf("dragon-shield: HTTPS/WebSocket fallback listening on %s/tcp", cfg.Listen)
+		log.Printf("dragon-shield: HTTPS/WebSocket fallback listening on %s/tcp", fallbackListen)
 		errCh <- tcpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
 	}()
 	return <-errCh
