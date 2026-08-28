@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -14,6 +15,8 @@ import (
 	"github.com/quic-go/quic-go"
 	"github.com/quic-go/webtransport-go"
 )
+
+const webSocketFallbackPort = "8443"
 
 type carrier interface {
 	Kind() string
@@ -96,12 +99,20 @@ func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 	return &wtCarrier{sess: sess, tr: tr}, nil
 }
 
+func webSocketFallbackServer(server string) string {
+	host, _, err := net.SplitHostPort(server)
+	if err != nil {
+		return net.JoinHostPort(server, webSocketFallbackPort)
+	}
+	return net.JoinHostPort(host, webSocketFallbackPort)
+}
+
 func dialWebSocket(ctx context.Context, cfg ClientConfig) (carrier, error) {
 	headers, err := newAuthHeaders(cfg.ClientID, cfg.Token, cfg.WebSocketPath)
 	if err != nil {
 		return nil, err
 	}
-	url := "wss://" + cfg.Server + cfg.WebSocketPath
+	url := "wss://" + webSocketFallbackServer(cfg.Server) + cfg.WebSocketPath
 	conn, rsp, err := websocket.Dial(ctx, url, &websocket.DialOptions{
 		HTTPHeader:      headers,
 		CompressionMode: websocket.CompressionDisabled,
