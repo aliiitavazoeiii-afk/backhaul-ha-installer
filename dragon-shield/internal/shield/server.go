@@ -121,6 +121,8 @@ func RunServer(cfg ServerConfig) error {
 			KeepAlivePeriod:                  15 * time.Second,
 			MaxIdleTimeout:                   45 * time.Second,
 			HandshakeIdleTimeout:             5 * time.Second,
+			InitialPacketSize:                1200,
+			DisablePathMTUDiscovery:          true,
 		},
 	}
 	webtransport.ConfigureHTTP3Server(h3)
