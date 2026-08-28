@@ -24,14 +24,24 @@ Example:
 USAGE
 }
 
+local_shield_ip(){
+  ip -4 -o addr show dev dfrshield0 scope global 2>/dev/null | awk 'NR==1 {split($4,a,"/"); print a[1]}'
+}
+
 write_rules(){
   # shellcheck disable=SC1090
   source "$CONF"
+  : "${LOCAL_SHIELD_IP:=$(local_shield_ip)}"
+  [[ -n "$LOCAL_SHIELD_IP" ]] || die 'could not determine local dfrshield0 IPv4 address'
   cat >"$RULES" <<NFT
 table inet ${TABLE} {
   chain output {
     type nat hook output priority -100; policy accept;
     ip daddr ${PUBLIC_IP} udp dport ${UDP_PORT} dnat ip to ${SHIELD_IP}:${UDP_PORT}
+  }
+  chain postrouting {
+    type nat hook postrouting priority 100; policy accept;
+    oifname "dfrshield0" ip daddr ${SHIELD_IP} udp dport ${UDP_PORT} snat ip to ${LOCAL_SHIELD_IP}
   }
 }
 NFT
@@ -53,16 +63,26 @@ TABLE="dragon_shield_dfr"
 CONF="/etc/dragon-shield/dfr-bridge.conf"
 RULES="/etc/dragon-shield/dfr-bridge.nft"
 
+local_shield_ip(){
+  ip -4 -o addr show dev dfrshield0 scope global 2>/dev/null | awk 'NR==1 {split($4,a,"/"); print a[1]}'
+}
+
 apply(){
   [[ -r "$CONF" ]] || { echo "[dfr-bridge] ERROR: missing $CONF" >&2; exit 1; }
   command -v nft >/dev/null 2>&1 || { echo '[dfr-bridge] ERROR: nft command missing' >&2; exit 1; }
   # shellcheck disable=SC1090
   source "$CONF"
+  : "${LOCAL_SHIELD_IP:=$(local_shield_ip)}"
+  [[ -n "$LOCAL_SHIELD_IP" ]] || { echo '[dfr-bridge] ERROR: could not determine local dfrshield0 IPv4 address' >&2; exit 1; }
   cat >"$RULES" <<NFT
 table inet ${TABLE} {
   chain output {
     type nat hook output priority -100; policy accept;
     ip daddr ${PUBLIC_IP} udp dport ${UDP_PORT} dnat ip to ${SHIELD_IP}:${UDP_PORT}
+  }
+  chain postrouting {
+    type nat hook postrouting priority 100; policy accept;
+    oifname "dfrshield0" ip daddr ${SHIELD_IP} udp dport ${UDP_PORT} snat ip to ${LOCAL_SHIELD_IP}
   }
 }
 NFT
@@ -80,7 +100,7 @@ HELPERFILE
 }
 
 install_bridge(){
-  local public_ip="" shield_ip="" udp_port=""
+  local public_ip="" shield_ip="" udp_port="" local_ip=""
   while (($#)); do
     case "$1" in
       --public-ip) public_ip="${2:-}"; shift 2 ;;
@@ -93,6 +113,8 @@ install_bridge(){
   [[ "$shield_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die 'invalid --shield-ip'
   [[ "$udp_port" =~ ^[0-9]+$ ]] && ((udp_port>=1 && udp_port<=65535)) || die 'invalid --udp-port'
   ip link show dfrshield0 >/dev/null 2>&1 || die 'dfrshield0 is not present; bring Dragon Shield up first'
+  local_ip="$(local_shield_ip)"
+  [[ "$local_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || die 'could not determine local dfrshield0 IPv4 address'
 
   apt-get update -y >/dev/null
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends nftables >/dev/null
@@ -100,6 +122,7 @@ install_bridge(){
   cat >"$CONF" <<EOF
 PUBLIC_IP=${public_ip}
 SHIELD_IP=${shield_ip}
+LOCAL_SHIELD_IP=${local_ip}
 UDP_PORT=${udp_port}
 EOF
   chmod 0600 "$CONF"
@@ -125,7 +148,7 @@ UNITFILE
   systemctl daemon-reload
   systemctl enable dragon-shield-dfr-bridge.service >/dev/null
   systemctl restart dragon-shield-dfr-bridge.service
-  log "bridging UDP ${udp_port} for ${public_ip} through ${shield_ip}"
+  log "bridging UDP ${udp_port} for ${public_ip} through ${shield_ip}; SNAT ${local_ip}"
 }
 
 remove_bridge(){
