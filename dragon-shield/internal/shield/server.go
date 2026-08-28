@@ -69,7 +69,7 @@ func (r *peerRegistry) getByIP(ip net.IP) *peer {
 	return p
 }
 
-func fallbackTCPListenAddr(listen string) string {
+func transportListenAddr(listen string) string {
 	host, _, err := net.SplitHostPort(listen)
 	if err != nil {
 		return ":" + webSocketFallbackPort
@@ -104,8 +104,9 @@ func RunServer(cfg ServerConfig) error {
 		MinVersion:   tls.VersionTLS13,
 	}
 
+	transportListen := transportListenAddr(cfg.Listen)
 	h3 := &http3.Server{
-		Addr:      cfg.Listen,
+		Addr:      transportListen,
 		TLSConfig: http3.ConfigureTLSConfig(baseTLS.Clone()),
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,
@@ -151,9 +152,8 @@ func RunServer(cfg ServerConfig) error {
 		go servePeer(tun, serverIP, cl, &wsCarrier{conn: conn}, registry, cfg.MTU)
 	})
 	tcpMux.HandleFunc("/", landingHandler)
-	fallbackListen := fallbackTCPListenAddr(cfg.Listen)
 	tcpServer := &http.Server{
-		Addr:              fallbackListen,
+		Addr:              transportListen,
 		Handler:           tcpMux,
 		TLSConfig:         baseTLS.Clone(),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -162,11 +162,11 @@ func RunServer(cfg ServerConfig) error {
 
 	errCh := make(chan error, 2)
 	go func() {
-		log.Printf("dragon-shield: HTTP/3 WebTransport listening on %s/udp", cfg.Listen)
+		log.Printf("dragon-shield: HTTP/3 WebTransport listening on %s/udp", transportListen)
 		errCh <- wtServer.ListenAndServe()
 	}()
 	go func() {
-		log.Printf("dragon-shield: HTTPS/WebSocket fallback listening on %s/tcp", fallbackListen)
+		log.Printf("dragon-shield: HTTPS/WebSocket fallback listening on %s/tcp", transportListen)
 		errCh <- tcpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
 	}()
 	return <-errCh
