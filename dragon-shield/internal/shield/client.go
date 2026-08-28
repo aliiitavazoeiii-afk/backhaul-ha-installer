@@ -19,6 +19,12 @@ func RunClient(cfg ClientConfig) error {
 	}
 	defer tun.Close()
 
+	closeVeil, err := startClientVeil(cfg)
+	if err != nil {
+		return fmt.Errorf("start encrypted UDP veil: %w", err)
+	}
+	defer closeVeil()
+
 	outbound := make(chan []byte, 256)
 	var drops atomic.Uint64
 	go clientTunReader(tun, clientIP, serverIP, cfg.MTU, outbound, &drops)
