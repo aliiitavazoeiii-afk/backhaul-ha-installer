@@ -27,7 +27,6 @@ write_rules(){
   # shellcheck disable=SC1090
   source "$CONF"
   cat >"$RULES" <<NFT
-flush table inet ${TABLE}
 table inet ${TABLE} {
   chain output {
     type nat hook output priority dstnat; policy accept;
@@ -41,6 +40,9 @@ apply(){
   [[ -r "$CONF" ]] || die "missing $CONF"
   command -v nft >/dev/null 2>&1 || die 'nft command missing'
   write_rules
+  # First install has no table yet. Delete an old table if present, then load
+  # the complete replacement atomically from the generated rules file.
+  nft delete table inet "$TABLE" >/dev/null 2>&1 || true
   nft -f "$RULES"
 }
 
@@ -79,7 +81,7 @@ Wants=network-online.target dragon-shield.service
 Type=oneshot
 ExecStart=/usr/local/sbin/dragon-shield-dfr-bridge apply
 RemainAfterExit=yes
-ExecStop=/usr/sbin/nft delete table inet dragon_shield_dfr
+ExecStop=-/usr/sbin/nft delete table inet dragon_shield_dfr
 
 [Install]
 WantedBy=multi-user.target
