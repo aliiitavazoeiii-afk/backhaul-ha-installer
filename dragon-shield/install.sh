@@ -83,6 +83,7 @@ build_binary() {
   git clone --depth 1 --branch "$BRANCH" "$REPO_URL" "$SRC_DIR"
   cd "$SRC_DIR/dragon-shield"
   export PATH="/usr/local/go/bin:$PATH"
+  GOTOOLCHAIN=local go mod tidy
   GOTOOLCHAIN=local go build -trimpath -ldflags='-s -w' -o "$BIN" ./cmd/dragon-shield
   chmod 0755 "$BIN"
   log "installed $($BIN version)"
