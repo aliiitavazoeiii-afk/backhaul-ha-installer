@@ -103,6 +103,7 @@ func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 			KeepAlivePeriod:                  15 * time.Second,
 			MaxIdleTimeout:                   45 * time.Second,
 			HandshakeIdleTimeout:             5 * time.Second,
+			InitialPacketSize:                1200,
 			DisablePathMTUDiscovery:          true,
 		},
 		DialAddr: func(ctx context.Context, _ string, tlsCfg *tls.Config, qcfg *quic.Config) (*quic.Conn, error) {
