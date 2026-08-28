@@ -1,0 +1,47 @@
+name: Dragon Shield
+
+on:
+  push:
+    branches:
+      - agent/dragon-shield-v1
+    paths:
+      - 'dragon-shield/**'
+      - '.github/workflows/dragon-shield.yml'
+  pull_request:
+    paths:
+      - 'dragon-shield/**'
+      - '.github/workflows/dragon-shield.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - name: Module download
+        working-directory: dragon-shield
+        run: go mod download
+      - name: Format
+        working-directory: dragon-shield
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        working-directory: dragon-shield
+        run: go vet ./...
+      - name: Test
+        working-directory: dragon-shield
+        run: go test ./... -race -count=1 -timeout=90s
+      - name: Build
+        working-directory: dragon-shield
+        run: |
+          go build -trimpath -o /tmp/dragon-shield ./cmd/dragon-shield
+          test "$(/tmp/dragon-shield version)" = "1.0.0"
+      - name: Shell syntax
+        run: bash -n dragon-shield/install.sh

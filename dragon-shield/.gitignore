@@ -1,0 +1,4 @@
+dragon-shield
+*.test
+*.log
+.DS_Store
