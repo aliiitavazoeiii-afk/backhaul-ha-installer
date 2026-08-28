@@ -2,21 +2,29 @@ package shield
 
 import (
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
 	"sync"
+	"syscall"
 )
 
 type tunDevice struct {
-	f       *os.File
+	fd      int
 	writeMu sync.Mutex
 }
 
 func openTun(name string) (*tunDevice, error) {
-	f, err := os.OpenFile("/dev/net/tun", os.O_RDWR, 0)
+	// /dev/net/tun is intentionally handled with raw Linux syscalls instead of
+	// os.OpenFile. Go's runtime poller treats TUN character devices as
+	// non-pollable on Linux and can leave an os.File in a half-configured poll
+	// state, which manifests as "read /dev/net/tun: not pollable" after service
+	// restarts. A blocking raw fd is exactly what a TUN packet loop needs and
+	// avoids involving the runtime netpoller entirely.
+	fd, err := syscall.Open("/dev/net/tun", syscall.O_RDWR|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open /dev/net/tun: %w", err)
 	}
+
 	// Linux TUNSETIFF: _IOW('T', 202, int). The ifreq layout starts with IFNAMSIZ=16.
 	ifreq := make([]byte, 40)
 	copy(ifreq[:16], []byte(name))
@@ -28,24 +36,36 @@ func openTun(name string) (*tunDevice, error) {
 	flags := uint16(iffTun | iffNoPI)
 	ifreq[16] = byte(flags)
 	ifreq[17] = byte(flags >> 8)
-	_, _, errno := syscallRawIoctl(f.Fd(), tunSetIFF, uintptrPointer(&ifreq[0]))
+	_, _, errno := syscallRawIoctl(uintptr(fd), tunSetIFF, uintptrPointer(&ifreq[0]))
 	if errno != 0 {
-		_ = f.Close()
+		_ = syscall.Close(fd)
 		return nil, fmt.Errorf("TUNSETIFF %s: %v", name, errno)
 	}
-	return &tunDevice{f: f}, nil
+	return &tunDevice{fd: fd}, nil
 }
 
-func (t *tunDevice) Read(p []byte) (int, error) { return t.f.Read(p) }
+func (t *tunDevice) Read(p []byte) (int, error) {
+	n, err := syscall.Read(t.fd, p)
+	if err != nil {
+		return n, fmt.Errorf("read /dev/net/tun: %w", err)
+	}
+	return n, nil
+}
 
 func (t *tunDevice) WritePacket(p []byte) error {
 	t.writeMu.Lock()
 	defer t.writeMu.Unlock()
-	_, err := t.f.Write(p)
-	return err
+	n, err := syscall.Write(t.fd, p)
+	if err != nil {
+		return fmt.Errorf("write /dev/net/tun: %w", err)
+	}
+	if n != len(p) {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
-func (t *tunDevice) Close() error { return t.f.Close() }
+func (t *tunDevice) Close() error { return syscall.Close(t.fd) }
 
 func PrepareTun(c CommonTunConfig) error {
 	if c.MTU < 576 || c.MTU > 1400 {
