@@ -1,0 +1,1 @@
+DFR Shielded is intentionally staged. The carrier must be validated against strongSwan/XFRM semantics before production use.
