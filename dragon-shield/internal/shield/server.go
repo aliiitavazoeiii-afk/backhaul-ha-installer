@@ -104,9 +104,16 @@ func RunServer(cfg ServerConfig) error {
 		MinVersion:   tls.VersionTLS13,
 	}
 
-	transportListen := transportListenAddr(cfg.Listen)
+	closeVeil, err := startServerVeil(cfg)
+	if err != nil {
+		return fmt.Errorf("start encrypted UDP veil: %w", err)
+	}
+	defer closeVeil()
+
+	wtListen := veilLoopbackAddr
+	fallbackListen := transportListenAddr(cfg.Listen)
 	h3 := &http3.Server{
-		Addr:      transportListen,
+		Addr:      wtListen,
 		TLSConfig: http3.ConfigureTLSConfig(baseTLS.Clone()),
 		QUICConfig: &quic.Config{
 			EnableDatagrams:                  true,
@@ -153,7 +160,7 @@ func RunServer(cfg ServerConfig) error {
 	})
 	tcpMux.HandleFunc("/", landingHandler)
 	tcpServer := &http.Server{
-		Addr:              transportListen,
+		Addr:              fallbackListen,
 		Handler:           tcpMux,
 		TLSConfig:         baseTLS.Clone(),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -162,11 +169,11 @@ func RunServer(cfg ServerConfig) error {
 
 	errCh := make(chan error, 2)
 	go func() {
-		log.Printf("dragon-shield: HTTP/3 WebTransport listening on %s/udp", transportListen)
+		log.Printf("dragon-shield: HTTP/3 WebTransport listening on %s/udp behind encrypted veil", wtListen)
 		errCh <- wtServer.ListenAndServe()
 	}()
 	go func() {
-		log.Printf("dragon-shield: HTTPS/WebSocket fallback listening on %s/tcp", transportListen)
+		log.Printf("dragon-shield: HTTPS/WebSocket fallback listening on %s/tcp", fallbackListen)
 		errCh <- tcpServer.ListenAndServeTLS(cfg.TLSCert, cfg.TLSKey)
 	}()
 	return <-errCh
