@@ -25,9 +25,19 @@ type carrier interface {
 	Close() error
 }
 
+// basicPacketConn deliberately exposes only net.PacketConn. In particular it
+// does not expose the OOBCapablePacketConn methods of *net.UDPConn. This forces
+// quic-go onto its portable ReadFrom / WriteTo path instead of Linux OOB,
+// ECN, DF / PMTUD and UDP GSO optimizations that can be incompatible with some
+// virtualized / filtered network paths.
+type basicPacketConn struct {
+	net.PacketConn
+}
+
 type wtCarrier struct {
 	sess *webtransport.Session
 	tr   *webtransport.Transport
+	pc   net.PacketConn
 }
 
 func (c *wtCarrier) Kind() string { return "webtransport" }
@@ -40,7 +50,10 @@ func (c *wtCarrier) Recv(ctx context.Context) ([]byte, error) {
 func (c *wtCarrier) Close() error {
 	_ = c.sess.CloseWithError(0, "")
 	if c.tr != nil {
-		return c.tr.Close()
+		_ = c.tr.Close()
+	}
+	if c.pc != nil {
+		return c.pc.Close()
 	}
 	return nil
 }
@@ -80,6 +93,8 @@ func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	var packetConn net.PacketConn
 	tr := &webtransport.Transport{
 		TLSClientConfig: &tls.Config{
 			ServerName: cfg.ServerName,
@@ -91,20 +106,46 @@ func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 			KeepAlivePeriod:                  15 * time.Second,
 			MaxIdleTimeout:                   45 * time.Second,
 			HandshakeIdleTimeout:             5 * time.Second,
+			DisablePathMTUDiscovery:          true,
+		},
+		DialAddr: func(ctx context.Context, addr string, tlsCfg *tls.Config, qcfg *quic.Config) (*quic.Conn, error) {
+			pc, err := net.ListenPacket("udp4", ":0")
+			if err != nil {
+				return nil, fmt.Errorf("listen plain UDP socket: %w", err)
+			}
+			remote, err := net.ResolveUDPAddr("udp4", addr)
+			if err != nil {
+				_ = pc.Close()
+				return nil, fmt.Errorf("resolve QUIC endpoint %q: %w", addr, err)
+			}
+			packetConn = pc
+			conn, err := quic.DialEarly(ctx, &basicPacketConn{PacketConn: pc}, remote, tlsCfg, qcfg)
+			if err != nil {
+				_ = pc.Close()
+				packetConn = nil
+				return nil, err
+			}
+			return conn, nil
 		},
 	}
 	url := "https://" + transportServer(cfg.Server) + cfg.WebTransportPath
 	rsp, sess, err := tr.Dial(ctx, url, headers)
 	if err != nil {
 		_ = tr.Close()
+		if packetConn != nil {
+			_ = packetConn.Close()
+		}
 		return nil, err
 	}
 	if rsp.StatusCode < 200 || rsp.StatusCode >= 300 {
 		_ = sess.CloseWithError(0, "")
 		_ = tr.Close()
+		if packetConn != nil {
+			_ = packetConn.Close()
+		}
 		return nil, fmt.Errorf("webtransport HTTP status %d", rsp.StatusCode)
 	}
-	return &wtCarrier{sess: sess, tr: tr}, nil
+	return &wtCarrier{sess: sess, tr: tr, pc: packetConn}, nil
 }
 
 func dialWebSocket(ctx context.Context, cfg ClientConfig) (carrier, error) {
