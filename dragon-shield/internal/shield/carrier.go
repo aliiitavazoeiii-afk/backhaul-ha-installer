@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -129,15 +130,19 @@ func dialCarrier(ctx context.Context, cfg ClientConfig, preferWT bool) (carrier,
 		return try(dialWebSocket)
 	case "auto":
 		var first, second func(context.Context, ClientConfig) (carrier, error)
+		var firstName, secondName string
 		if preferWT {
 			first, second = dialWebTransport, dialWebSocket
+			firstName, secondName = "webtransport", "websocket"
 		} else {
 			first, second = dialWebSocket, dialWebTransport
+			firstName, secondName = "websocket", "webtransport"
 		}
 		c, err1 := try(first)
 		if err1 == nil {
 			return c, nil
 		}
+		log.Printf("dragon-shield: %s dial failed, trying %s: %v", firstName, secondName, err1)
 		c, err2 := try(second)
 		if err2 == nil {
 			return c, nil
