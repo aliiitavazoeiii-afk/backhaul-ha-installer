@@ -26,10 +26,7 @@ type carrier interface {
 }
 
 // basicPacketConn deliberately exposes only net.PacketConn. In particular it
-// does not expose the OOBCapablePacketConn methods of *net.UDPConn. This forces
-// quic-go onto its portable ReadFrom / WriteTo path instead of Linux OOB,
-// ECN, DF / PMTUD and UDP GSO optimizations that can be incompatible with some
-// virtualized / filtered network paths.
+// does not expose the OOBCapablePacketConn methods of *net.UDPConn.
 type basicPacketConn struct {
 	net.PacketConn
 }
@@ -108,15 +105,15 @@ func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 			HandshakeIdleTimeout:             5 * time.Second,
 			DisablePathMTUDiscovery:          true,
 		},
-		DialAddr: func(ctx context.Context, addr string, tlsCfg *tls.Config, qcfg *quic.Config) (*quic.Conn, error) {
+		DialAddr: func(ctx context.Context, _ string, tlsCfg *tls.Config, qcfg *quic.Config) (*quic.Conn, error) {
 			pc, err := net.ListenPacket("udp4", ":0")
 			if err != nil {
-				return nil, fmt.Errorf("listen plain UDP socket: %w", err)
+				return nil, fmt.Errorf("listen local QUIC socket: %w", err)
 			}
-			remote, err := net.ResolveUDPAddr("udp4", addr)
+			remote, err := net.ResolveUDPAddr("udp4", veilLoopbackAddr)
 			if err != nil {
 				_ = pc.Close()
-				return nil, fmt.Errorf("resolve QUIC endpoint %q: %w", addr, err)
+				return nil, fmt.Errorf("resolve local veil endpoint: %w", err)
 			}
 			packetConn = pc
 			conn, err := quic.DialEarly(ctx, &basicPacketConn{PacketConn: pc}, remote, tlsCfg, qcfg)
@@ -128,6 +125,8 @@ func dialWebTransport(ctx context.Context, cfg ClientConfig) (carrier, error) {
 			return conn, nil
 		},
 	}
+	// Keep the public host in the URL for the HTTP/3 authority and TLS SNI. The
+	// actual UDP packets are sent to the local encrypted veil by DialAddr above.
 	url := "https://" + transportServer(cfg.Server) + cfg.WebTransportPath
 	rsp, sess, err := tr.Dial(ctx, url, headers)
 	if err != nil {
