@@ -1,0 +1,1 @@
+Dragon Fruit Relay upstream is GPL-3.0-or-later. If upstream GPL code is copied or modified into this project and the resulting work is distributed, preserve the applicable GPL license notices and source obligations.
