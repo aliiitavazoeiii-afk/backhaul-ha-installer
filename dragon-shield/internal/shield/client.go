@@ -43,7 +43,7 @@ func RunClient(cfg ClientConfig) error {
 		}
 		backoff = 250 * time.Millisecond
 		preferWT = c.Kind() == "webtransport"
-		log.Printf("dragon-shield: connected to %s via %s", cfg.Server, c.Kind())
+		log.Printf("dragon-shield: connected to %s via %s", transportServer(cfg.Server), c.Kind())
 		err = runClientCarrier(tun, c, clientIP, serverIP, cfg.MTU, outbound)
 		_ = c.Close()
 		log.Printf("dragon-shield: carrier %s ended: %v; tun drops=%d", c.Kind(), err, drops.Load())
