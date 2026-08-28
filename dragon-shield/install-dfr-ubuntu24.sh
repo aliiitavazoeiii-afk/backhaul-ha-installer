@@ -71,11 +71,23 @@ if [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" != "24.04" ]]; then
     early_exit "Unsupported Ubuntu release: ${PRETTY_NAME:-${VERSION_ID:-unknown}}. This build supports Ubuntu 24.04 LTS only."
 fi'''
 
+old_runtime_guard = '''    [[ "${ID:-}" == "debian" ]] || die "This installer supports Debian only. Detected: ${ID:-unknown}.";'''
+new_runtime_guard = '''    if [[ "${ID:-}" != "debian" && "${ID:-}" != "ubuntu" ]]; then
+        die "This installer supports Debian/Ubuntu only. Detected: ${ID:-unknown}.";
+    fi;
+    if [[ "${ID:-}" == "ubuntu" && "${VERSION_ID:-}" != "24.04" ]]; then
+        die "This compatibility build supports Ubuntu 24.04 LTS only. Detected: ${VERSION_ID:-unknown}.";
+    fi;'''
+
 for p in (ingress, egress):
     s = p.read_text()
     if old_guard not in s:
         raise SystemExit(f'platform guard not found in {p.name}')
-    p.write_text(s.replace(old_guard, new_guard, 1))
+    s = s.replace(old_guard, new_guard, 1)
+    if old_runtime_guard not in s:
+        raise SystemExit(f'runtime platform guard not found in {p.name}')
+    s = s.replace(old_runtime_guard, new_runtime_guard, 1)
+    p.write_text(s)
 
 # Managed Ingress releases are embedded in the Egress script. Patch the decoded
 # embedded client before its integrity check and make the expected hash match
@@ -96,9 +108,15 @@ p=Path(sys.argv[1])
 s=p.read_text()
 old=''' + repr(old_guard) + r'''
 new=''' + repr(new_guard) + r'''
+old_runtime=''' + repr(old_runtime_guard) + r'''
+new_runtime=''' + repr(new_runtime_guard) + r'''
 if old not in s:
     raise SystemExit('embedded ingress platform guard not found')
-p.write_text(s.replace(old,new,1))
+s=s.replace(old,new,1)
+if old_runtime not in s:
+    raise SystemExit('embedded ingress runtime platform guard not found')
+s=s.replace(old_runtime,new_runtime,1)
+p.write_text(s)
 PY_DFR_UBUNTU24
 '''
 s = s.replace(needle, patch_block + needle, 1)
@@ -115,6 +133,8 @@ bash -n "$WORK_ROOT/main-engine/dragon-fruit-relay-ingress.sh"
 
 grep -q 'Ubuntu 24.04 LTS only' "$WORK_ROOT/main-engine/dragon-fruit-relay-ingress.sh" || die "Ingress patch verification failed"
 grep -q 'Ubuntu 24.04 LTS only' "$WORK_ROOT/main-engine/dragon-fruit-relay-egress.sh" || die "Egress patch verification failed"
+! grep -q 'This installer supports Debian only. Detected:' "$WORK_ROOT/main-engine/dragon-fruit-relay-ingress.sh" || die "Ingress runtime platform guard patch failed"
+! grep -q 'This installer supports Debian only. Detected:' "$WORK_ROOT/main-engine/dragon-fruit-relay-egress.sh" || die "Egress runtime platform guard patch failed"
 
 log "patched DFR ${DFR_TAG} is ready at ${WORK_ROOT}"
 log "required Ubuntu 24.04 package set is available"
