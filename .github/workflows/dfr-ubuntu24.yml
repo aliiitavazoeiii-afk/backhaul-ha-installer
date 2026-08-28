@@ -1,0 +1,28 @@
+name: DFR Ubuntu 24 Compatibility
+
+on:
+  push:
+    branches:
+      - agent/dragon-shield-v1
+    paths:
+      - 'dragon-shield/install-dfr-ubuntu24.sh'
+      - '.github/workflows/dfr-ubuntu24.yml'
+  pull_request:
+    paths:
+      - 'dragon-shield/install-dfr-ubuntu24.sh'
+      - '.github/workflows/dfr-ubuntu24.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n dragon-shield/install-dfr-ubuntu24.sh
+      - name: Patch and verify upstream DFR on Ubuntu 24.04
+        run: sudo bash dragon-shield/install-dfr-ubuntu24.sh --verify-only
