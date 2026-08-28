@@ -1,0 +1,14 @@
+[Unit]
+Description=DFR Shielded Carrier (experimental)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/dfr-shielded --config /etc/dfr-shielded/config.env
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
