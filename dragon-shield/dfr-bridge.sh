@@ -29,7 +29,7 @@ write_rules(){
   cat >"$RULES" <<NFT
 table inet ${TABLE} {
   chain output {
-    type nat hook output priority dstnat; policy accept;
+    type nat hook output priority -100; policy accept;
     ip daddr ${PUBLIC_IP} udp dport ${UDP_PORT} dnat ip to ${SHIELD_IP}:${UDP_PORT}
   }
 }
@@ -41,7 +41,7 @@ apply(){
   command -v nft >/dev/null 2>&1 || die 'nft command missing'
   write_rules
   # First install has no table yet. Delete an old table if present, then load
-  # the complete replacement atomically from the generated rules file.
+  # the complete replacement from the generated rules file.
   nft delete table inet "$TABLE" >/dev/null 2>&1 || true
   nft -f "$RULES"
 }
