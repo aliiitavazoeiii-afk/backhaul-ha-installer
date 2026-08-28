@@ -4,7 +4,7 @@ umask 077
 
 BASE_COMMIT="d74aba1add14830a1c9d3c9f46751ffc3afd1dbc"
 BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/${BASE_COMMIT}/dragon-shield/install-dfr-ubuntu24.sh"
-REMOTE_SAFE_COMMIT="a1e26f2b4f2dadda1a029a3254392e299e104b3e"
+REMOTE_SAFE_COMMIT="69d2c554d1cde15adbbbd92a8ab13cc5bed1b552"
 REMOTE_SAFE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/${REMOTE_SAFE_COMMIT}/dragon-shield/dfr-ubuntu24-remote-safe-patch.py"
 
 tmp=$(mktemp -t dfr-ubuntu24-hotfix.XXXXXXXX.sh)
@@ -41,6 +41,7 @@ rm -f "$REMOTE_SAFE_PATCH"
 bash -n "$WORK_ROOT/main-engine/dragon-fruit-relay-ingress.sh"
 grep -q 'Remote-safe retry: preserving current host package/network state' "$WORK_ROOT/main-engine/dragon-fruit-relay-ingress.sh" || die "Ingress remote-safe retry patch failed"
 grep -q 'Remote-safe rollback preserved the current host firewall' "$WORK_ROOT/main-engine/dragon-fruit-relay-ingress.sh" || die "Ingress remote-safe rollback patch failed"
+grep -q 'Ubuntu remote-safe mode: preserving host DHCP, systemd-resolved and /etc/resolv.conf' "$WORK_ROOT/main-engine/dragon-fruit-relay-ingress.sh" || die "Ingress resolver-preservation patch failed"
 
 '''
 if needle not in s:
