@@ -44,4 +44,6 @@ jobs:
           go build -trimpath -o /tmp/dragon-shield ./cmd/dragon-shield
           test "$(/tmp/dragon-shield version)" = "1.0.0"
       - name: Shell syntax
-        run: bash -n dragon-shield/install.sh
+        run: |
+          bash -n dragon-shield/install.sh
+          bash -n dragon-shield/dfr-bridge.sh
