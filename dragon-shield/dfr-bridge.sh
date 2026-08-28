@@ -6,6 +6,7 @@ TABLE="dragon_shield_dfr"
 CONF="/etc/dragon-shield/dfr-bridge.conf"
 UNIT="/etc/systemd/system/dragon-shield-dfr-bridge.service"
 RULES="/etc/dragon-shield/dfr-bridge.nft"
+HELPER="/usr/local/sbin/dragon-shield-dfr-bridge"
 
 log(){ printf '[dfr-bridge] %s\n' "$*"; }
 die(){ printf '[dfr-bridge] ERROR: %s\n' "$*" >&2; exit 1; }
@@ -40,10 +41,42 @@ apply(){
   [[ -r "$CONF" ]] || die "missing $CONF"
   command -v nft >/dev/null 2>&1 || die 'nft command missing'
   write_rules
-  # First install has no table yet. Delete an old table if present, then load
-  # the complete replacement from the generated rules file.
   nft delete table inet "$TABLE" >/dev/null 2>&1 || true
   nft -f "$RULES"
+}
+
+write_helper(){
+  cat >"$HELPER" <<'HELPERFILE'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+TABLE="dragon_shield_dfr"
+CONF="/etc/dragon-shield/dfr-bridge.conf"
+RULES="/etc/dragon-shield/dfr-bridge.nft"
+
+apply(){
+  [[ -r "$CONF" ]] || { echo "[dfr-bridge] ERROR: missing $CONF" >&2; exit 1; }
+  command -v nft >/dev/null 2>&1 || { echo '[dfr-bridge] ERROR: nft command missing' >&2; exit 1; }
+  # shellcheck disable=SC1090
+  source "$CONF"
+  cat >"$RULES" <<NFT
+table inet ${TABLE} {
+  chain output {
+    type nat hook output priority -100; policy accept;
+    ip daddr ${PUBLIC_IP} udp dport ${UDP_PORT} dnat ip to ${SHIELD_IP}:${UDP_PORT}
+  }
+}
+NFT
+  nft delete table inet "$TABLE" >/dev/null 2>&1 || true
+  nft -f "$RULES"
+}
+
+case "${1:-}" in
+  apply) apply ;;
+  *) echo 'usage: dragon-shield-dfr-bridge apply' >&2; exit 2 ;;
+esac
+HELPERFILE
+  chmod 0755 "$HELPER"
+  bash -n "$HELPER"
 }
 
 install_bridge(){
@@ -71,6 +104,8 @@ UDP_PORT=${udp_port}
 EOF
   chmod 0600 "$CONF"
 
+  write_helper
+
   cat >"$UNIT" <<'UNITFILE'
 [Unit]
 Description=Dragon Shield DFR public endpoint bridge
@@ -86,7 +121,7 @@ ExecStop=-/usr/sbin/nft delete table inet dragon_shield_dfr
 [Install]
 WantedBy=multi-user.target
 UNITFILE
-  install -m 0755 "$0" /usr/local/sbin/dragon-shield-dfr-bridge
+
   systemctl daemon-reload
   systemctl enable dragon-shield-dfr-bridge.service >/dev/null
   systemctl restart dragon-shield-dfr-bridge.service
@@ -96,7 +131,7 @@ UNITFILE
 remove_bridge(){
   systemctl disable --now dragon-shield-dfr-bridge.service >/dev/null 2>&1 || true
   nft delete table inet "$TABLE" >/dev/null 2>&1 || true
-  rm -f "$UNIT" "$RULES" "$CONF" /usr/local/sbin/dragon-shield-dfr-bridge
+  rm -f "$UNIT" "$RULES" "$CONF" "$HELPER"
   systemctl daemon-reload
   log 'removed'
 }
@@ -106,6 +141,8 @@ status_bridge(){
   ip -br addr show dfrshield0 2>/dev/null || true
   echo '=== DFR bridge config ==='
   if [[ -r "$CONF" ]]; then cat "$CONF"; else echo 'not configured'; fi
+  echo '=== bridge helper ==='
+  if [[ -x "$HELPER" ]]; then head -n 1 "$HELPER"; else echo 'helper missing'; fi
   echo '=== nft ==='
   nft list table inet "$TABLE" 2>/dev/null || echo 'rule not active'
 }
