@@ -251,7 +251,21 @@ func startServerVeil(cfg ServerConfig) (func(), error) {
 			if s == nil || s.id != matched.id {
 				if s != nil {
 					_ = s.inner.Close()
+					delete(sessions, mapKey)
 				}
+
+				// A client process restart / NAT rebind usually changes the outer
+				// UDP source port. Keep exactly one veil-to-QUIC socket per client
+				// ID so stale QUIC sessions cannot keep emitting replies to an old
+				// source port while the new handshake is in progress.
+				for oldKey, old := range sessions {
+					if oldKey != mapKey && old.id == matched.id {
+						_ = old.inner.Close()
+						delete(sessions, oldKey)
+						log.Printf("dragon-shield: encrypted UDP veil session %s superseded %s by %s", matched.id, oldKey, mapKey)
+					}
+				}
+
 				inner, dialErr := net.DialUDP("udp4", nil, innerTarget)
 				if dialErr != nil {
 					mu.Unlock()
