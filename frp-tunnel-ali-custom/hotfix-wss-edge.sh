@@ -65,9 +65,19 @@ choose_backend_port() {
   return 1
 }
 
+# Idempotent recovery: if a previous hotfix run already moved FRPS to loopback,
+# reuse that backend port instead of allocating another one.
+CURRENT_BIND_ADDR="$(sed -n 's/^[[:space:]]*bindAddr[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ETC/frps.toml" | head -n1)"
+CURRENT_BIND_PORT="$(sed -n 's/^[[:space:]]*bindPort[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ETC/frps.toml" | head -n1)"
+
 BACKEND_PORT="${FRPS_BACKEND_PORT:-}"
 if ! [[ "$BACKEND_PORT" =~ ^[0-9]+$ ]] || ((10#$BACKEND_PORT < 1 || 10#$BACKEND_PORT > 65535)); then
-  BACKEND_PORT="$(choose_backend_port)" || die "Could not find a free loopback backend port."
+  if [[ "$CURRENT_BIND_ADDR" == "127.0.0.1" && "$CURRENT_BIND_PORT" =~ ^[0-9]+$ && "$CURRENT_BIND_PORT" != "$CONTROL_PORT" ]]; then
+    BACKEND_PORT="$CURRENT_BIND_PORT"
+    info "Detected existing loopback FRPS backend on 127.0.0.1:${BACKEND_PORT}; reusing it."
+  else
+    BACKEND_PORT="$(choose_backend_port)" || die "Could not find a free loopback backend port."
+  fi
 fi
 [[ "$BACKEND_PORT" != "$CONTROL_PORT" ]] || die "Backend port must differ from public WSS control port."
 
@@ -77,7 +87,7 @@ ts="$(date +%Y%m%d-%H%M%S)"
 cp -a "$ETC/frps.toml" "$STATE/backups/frps-before-wss-edge-${ts}.toml"
 chmod 0600 "$STATE/backups/frps-before-wss-edge-${ts}.toml"
 
-info "Installing nginx as the TLS/WSS edge. FRPS will become loopback-only on 127.0.0.1:${BACKEND_PORT}."
+info "Installing nginx as the TLS/WSS edge. FRPS will be loopback-only on 127.0.0.1:${BACKEND_PORT}."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y >/dev/null
 apt-get install -y nginx >/dev/null
@@ -129,7 +139,6 @@ EOF
 chmod 0644 "$NGINX_CONF"
 nginx -t >/dev/null || die "nginx configuration validation failed."
 
-# Reload nginx after future Let's Encrypt renewals so the new certificate is used.
 mkdir -p /etc/letsencrypt/renewal-hooks/deploy
 cat >"/etc/letsencrypt/renewal-hooks/deploy/${APP}-nginx" <<'EOF'
 #!/usr/bin/env bash
@@ -138,7 +147,6 @@ systemctl reload nginx
 EOF
 chmod 0755 "/etc/letsencrypt/renewal-hooks/deploy/${APP}-nginx"
 
-# Free the public control port from FRPS, then start the loopback backend and nginx edge.
 systemctl stop "$SERVICE"
 systemctl restart "$SERVICE"
 systemctl enable nginx >/dev/null 2>&1 || true
@@ -147,21 +155,24 @@ systemctl restart nginx
 systemctl is-active --quiet "$SERVICE" || die "FRPS failed after WSS-edge rewrite."
 systemctl is-active --quiet nginx || die "nginx WSS edge failed to start."
 
-# Persist topology metadata without duplicating keys.
 sed -i '/^EDGE_PROXY=/d;/^FRPS_BACKEND_PORT=/d' "$ETC/meta.env"
 printf 'EDGE_PROXY=%q\nFRPS_BACKEND_PORT=%q\n' "nginx" "$BACKEND_PORT" >>"$ETC/meta.env"
 chmod 0600 "$ETC/meta.env"
 
-# Validate public TLS and actual WebSocket upgrade through nginx to FRPS.
 openssl s_client -connect "${IRAN_IP}:${CONTROL_PORT}" -servername "$DOMAIN" \
   -CAfile /etc/ssl/certs/ca-certificates.crt -verify_return_error </dev/null >/dev/null 2>&1 ||
   die "Public TLS verification failed after nginx edge start."
 
+# FRP's websocket client sends Origin: http://<host>. The x/net/websocket server
+# rejects a handshake with a null Origin, so the probe must mirror FRPC.
 WS_OUT="$(
-  printf 'GET /~!frp HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n' "$DOMAIN" |
+  printf 'GET /~!frp HTTP/1.1\r\nHost: %s\r\nOrigin: http://%s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n' "$DOMAIN" "$DOMAIN" |
     timeout 5 openssl s_client -quiet -connect "${IRAN_IP}:${CONTROL_PORT}" -servername "$DOMAIN" 2>/dev/null || true
 )"
-grep -q "101 Switching Protocols" <<<"$WS_OUT" || die "WSS upgrade did not reach FRPS through nginx."
+grep -q "101 Switching Protocols" <<<"$WS_OUT" || {
+  echo "$WS_OUT" | head -n 12 >&2
+  die "WSS upgrade did not reach FRPS through nginx."
+}
 
 ok "Iran WSS edge fixed: ${DOMAIN}:${CONTROL_PORT} -> nginx TLS/WSS -> 127.0.0.1:${BACKEND_PORT} -> frps"
 warn "Now restart the Foreign node once: systemctl restart ${SERVICE}"
