@@ -11,7 +11,7 @@ META="$ETC/meta.env"
 FRPS="$OPT/bin/frps"
 FRPC="$OPT/bin/frpc"
 
-R=$'\033[0m'; B=$'\033[1m'; C=$'\033[36m'; G=$'\033[32m'; Y=$'\033[33m'; RED=$'\033[31m'; D=$'\033[2m'
+R=$'\033[0m'; B=$'\033[1m'; C=$'\033[36m'; G=$'\033[32m'; Y=$'\033[33m'; RED=$'\033[31m'
 
 [[ -f "$META" ]] || { echo "Not installed: $META missing" >&2; exit 1; }
 # meta.env is generated with printf %q by the installer.
@@ -98,7 +98,7 @@ health() {
     elif journalctl -u "$SERVICE" -b --no-pager 2>/dev/null | grep -Eq 'new proxy .*success|start proxy success'; then
       pstate=down
     else
-      pstate=wait
+      pstate="wait"
     fi
     domain_points_to_iran && dnsstate=up || dnsstate=down
     days="$(cert_days_left "$TLS_CERT")"
@@ -190,7 +190,8 @@ list_backups() {
 
 rollback_latest() {
   local b tmp cfg
-  b="$(ls -1t "$STATE"/backups/etc-*.tar.gz 2>/dev/null | head -n1 || true)"
+  b="$(find "$STATE/backups" -maxdepth 1 -type f -name 'etc-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null |
+       sort -nr | head -n1 | cut -d' ' -f2- || true)"
   [[ -n "$b" ]] || { echo "No backup available."; return 1; }
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
@@ -223,7 +224,10 @@ change_target() {
   read -r -p "New local target port [$LOCAL_TARGET_PORT]: " port
   port="${port:-$LOCAL_TARGET_PORT}"
   [[ "$ip" == "localhost" || "$ip" == "127."* || "$ip" == "::1" ]] || { echo "v2 only permits loopback/local targets."; return 1; }
-  [[ "$port" =~ ^[0-9]+$ ]] && ((10#$port>=1 && 10#$port<=65535)) || { echo "Invalid port."; return 1; }
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || ! ((10#$port>=1 && 10#$port<=65535)); then
+    echo "Invalid port."
+    return 1
+  fi
   tcp_test "$ip" "$port" || { echo "Target $ip:$port is not accepting TCP. No change made."; return 1; }
 
   backup_now >/dev/null
@@ -304,7 +308,9 @@ diagnostics() {
   fi
   echo
   echo "=== TCP COUNTERS (read-only) ==="
-  command -v nstat >/dev/null && nstat -az 2>/dev/null | grep -E 'TcpRetransSegs|TcpExtTCPTimeouts|TcpExtTCPSynRetrans|TcpExtTCPFastRetrans' || true
+  if command -v nstat >/dev/null; then
+    nstat -az 2>/dev/null | grep -E 'TcpRetransSegs|TcpExtTCPTimeouts|TcpExtTCPSynRetrans|TcpExtTCPFastRetrans' || true
+  fi
   echo
   echo "=== RECENT LOGS ==="
   journalctl -u "$SERVICE" --since '-10 minutes' --no-pager | tail -160 || true
@@ -354,7 +360,10 @@ menu() {
       6) rollback_latest; read -r -p "Enter to continue..." _ ;;
       7) cert_status; read -r -p "Enter to continue..." _ ;;
       8) restart_safe; read -r -p "Enter to continue..." _ ;;
-      9) [[ "$ROLE" == "foreign" ]] && change_target || pair_code; read -r -p "Enter to continue..." _ ;;
+      9)
+        if [[ "$ROLE" == "foreign" ]]; then change_target; else pair_code; fi
+        read -r -p "Enter to continue..." _
+        ;;
       10) show_dashboard; read -r -p "Enter to continue..." _ ;;
       11) show_config; read -r -p "Enter to continue..." _ ;;
       12) uninstall_app; return ;;
