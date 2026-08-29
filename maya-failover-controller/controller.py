@@ -19,11 +19,14 @@ CFG_PATH = ETC / "config.json"
 SECRETS_PATH = ETC / "secrets.env"
 STATE_PATH = STATE_DIR / "state.json"
 
+
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
+
 def log(msg):
     print(f"{now_iso()} {msg}", flush=True)
+
 
 def load_env(path):
     out = {}
@@ -35,17 +38,20 @@ def load_env(path):
         out[k.strip()] = v.strip()
     return out
 
+
 def load_json(path, default=None):
     try:
         return json.loads(path.read_text())
     except FileNotFoundError:
         return {} if default is None else default
 
+
 def atomic_json(path, data):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
+
 
 def http_json(url, method="GET", headers=None, body=None, timeout=10):
     payload = None
@@ -66,6 +72,7 @@ def http_json(url, method="GET", headers=None, body=None, timeout=10):
             parsed = {"raw": data}
         return e.code, parsed
 
+
 def tg_call(token, method, params):
     body = urllib.parse.urlencode(params).encode()
     req = urllib.request.Request(
@@ -75,6 +82,7 @@ def tg_call(token, method, params):
     )
     with urllib.request.urlopen(req, timeout=10) as r:
         return json.loads(r.read().decode())
+
 
 def send_tg(secrets, text):
     try:
@@ -86,11 +94,13 @@ def send_tg(secrets, text):
     except Exception as e:
         log(f"telegram send failed: {e}")
 
+
 def cf_headers(secrets):
     return {
         "Authorization": f"Bearer {secrets['CLOUDFLARE_API_TOKEN']}",
         "Accept": "application/json",
     }
+
 
 def cf_record(secrets, zone_id, record_id):
     status, data = http_json(
@@ -100,6 +110,7 @@ def cf_record(secrets, zone_id, record_id):
     if status != 200 or not data.get("success"):
         raise RuntimeError(f"Cloudflare record read failed: HTTP {status} {data}")
     return data["result"]
+
 
 def cf_switch(secrets, zone_id, record_id, ip, ttl=60):
     status, data = http_json(
@@ -112,6 +123,7 @@ def cf_switch(secrets, zone_id, record_id, ip, ttl=60):
         raise RuntimeError(f"Cloudflare DNS update failed: HTTP {status} {data}")
     return data["result"]
 
+
 def ping(ip, timeout=2):
     p = subprocess.run(
         ["ping", "-n", "-c", "1", "-W", str(timeout), ip],
@@ -120,12 +132,14 @@ def ping(ip, timeout=2):
     )
     return p.returncode == 0
 
+
 def tcp_connect(ip, port, timeout=3):
     try:
         with socket.create_connection((ip, port), timeout=timeout):
             return True, None
     except Exception as e:
         return False, str(e)
+
 
 def reality_tls_probe(ip, sni, port=443, timeout=5):
     try:
@@ -141,6 +155,7 @@ def reality_tls_probe(ip, sni, port=443, timeout=5):
     except Exception as e:
         return False, str(e)
 
+
 def wss_edge_probe(ip, domain, port=8443, timeout=5):
     try:
         ctx = ssl.create_default_context()
@@ -150,6 +165,7 @@ def wss_edge_probe(ip, domain, port=8443, timeout=5):
                 return True, tls.version() or "tls"
     except Exception as e:
         return False, str(e)
+
 
 def endpoint_probe(ip, sni):
     tcp_ok, tcp_detail = tcp_connect(ip, 443)
@@ -163,6 +179,7 @@ def endpoint_probe(ip, sni):
         "healthy": bool(tcp_ok and tls_ok),
     }
 
+
 def spare_probe(svc):
     ep = endpoint_probe(svc["spare_iran_ip"], svc["reality_sni"])
     edge_ok, edge_detail = wss_edge_probe(
@@ -173,8 +190,10 @@ def spare_probe(svc):
     ep["healthy"] = bool(ep["healthy"] and edge_ok)
     return ep
 
+
 def foreign_diag(ip):
     return {"ping": ping(ip)}
+
 
 def default_service_state():
     return {
@@ -190,8 +209,10 @@ def default_service_state():
         "unknown_alerted": False,
     }
 
+
 def format_probe(p):
     return f"ping={'OK' if p.get('ping') else 'FAIL'} tcp443={'OK' if p.get('tcp443') else 'FAIL'} realityTLS={'OK' if p.get('reality_tls') else 'FAIL'}"
+
 
 def switch_to(cfg, secrets, svc_name, svc, state, target):
     ip = svc[f"{target}_iran_ip"]
@@ -214,6 +235,45 @@ def switch_to(cfg, secrets, svc_name, svc, state, target):
         f"→ {target.upper()} {ip}\n"
         f"Cloudflare update: OK"
     )
+
+
+def test_switch_to(cfg, secrets, svc_name, svc, target):
+    if not svc.get("test_record_id") or not svc.get("test_domain"):
+        raise RuntimeError("Test mode is not enabled for this service")
+    ip = svc[f"{target}_iran_ip"]
+    rec = cf_switch(
+        secrets,
+        cfg["cloudflare"]["zone_id"],
+        svc["test_record_id"],
+        ip,
+        cfg["cloudflare"].get("ttl", 60),
+    )
+    send_tg(
+        secrets,
+        f"🧪 {svc_name.upper()} TEST DNS SWITCH\n"
+        f"{svc['test_domain']}\n"
+        f"→ {target.upper()} {rec['content']}\n"
+        f"Production {svc['domain']} was NOT changed."
+    )
+
+
+def test_status_lines(cfg, secrets):
+    lines = ["🧪 Maya Isolated Test DNS"]
+    for name, svc in cfg["services"].items():
+        if not svc.get("test_record_id") or not svc.get("test_domain"):
+            lines.append(f"{name.upper()}: test mode not enabled")
+            continue
+        rec = cf_record(secrets, cfg["cloudflare"]["zone_id"], svc["test_record_id"])
+        ip = rec["content"]
+        if ip == svc["main_iran_ip"]:
+            mode = "MAIN"
+        elif ip == svc["spare_iran_ip"]:
+            mode = "SPARE"
+        else:
+            mode = "UNKNOWN"
+        lines.append(f"{name.upper()}: {svc['test_domain']} → {ip} ({mode})")
+    return lines
+
 
 def process_telegram_commands(cfg, secrets, state):
     offset = int(state.get("telegram_offset", 0))
@@ -244,15 +304,22 @@ def process_telegram_commands(cfg, secrets, state):
                     f"fails={st.get('main_failures',0)}"
                 )
             send_tg(secrets, "\n".join(lines))
+        elif text == "/teststatus":
+            try:
+                send_tg(secrets, "\n".join(test_status_lines(cfg, secrets)))
+            except Exception as e:
+                send_tg(secrets, f"⛔ Test status failed: {e}")
         elif text in ("/help", "/start"):
             send_tg(
                 secrets,
                 "Commands:\n"
                 "/status\n"
-                "/main maya1\n"
-                "/spare maya1\n"
-                "/main maya3\n"
-                "/spare maya3"
+                "/main maya1 | /spare maya1\n"
+                "/main maya3 | /spare maya3\n"
+                "\nSafe isolated tests:\n"
+                "/teststatus\n"
+                "/testmain maya1 | /testspare maya1\n"
+                "/testmain maya3 | /testspare maya3"
             )
         else:
             parts = text.split()
@@ -268,7 +335,20 @@ def process_telegram_commands(cfg, secrets, state):
                     switch_to(cfg, secrets, name, svc, state, target)
                 except Exception as e:
                     send_tg(secrets, f"⛔ {name.upper()} DNS switch failed: {e}")
+            elif len(parts) == 2 and parts[0] in ("/testmain", "/testspare") and parts[1] in cfg["services"]:
+                target = "main" if parts[0] == "/testmain" else "spare"
+                name = parts[1]
+                svc = cfg["services"][name]
+                target_probe = spare_probe(svc) if target == "spare" else endpoint_probe(svc["main_iran_ip"], svc["reality_sni"])
+                if not target_probe["healthy"]:
+                    send_tg(secrets, f"⛔ {name.upper()} TEST {target.upper()} blocked: target is not healthy.")
+                    continue
+                try:
+                    test_switch_to(cfg, secrets, name, svc, target)
+                except Exception as e:
+                    send_tg(secrets, f"⛔ {name.upper()} TEST DNS switch failed: {e}")
     atomic_json(STATE_PATH, state)
+
 
 def reconcile_dns(cfg, secrets, state):
     for name, svc in cfg["services"].items():
@@ -291,6 +371,7 @@ def reconcile_dns(cfg, secrets, state):
             continue
         st["unknown_alerted"] = False
     atomic_json(STATE_PATH, state)
+
 
 def cycle(cfg, secrets, state):
     fail_threshold = int(cfg["policy"].get("main_failures_before_failover", 3))
@@ -370,6 +451,7 @@ def cycle(cfg, secrets, state):
 
     atomic_json(STATE_PATH, state)
 
+
 def diagnose(cfg, secrets):
     ok = True
     print("=== MAYA FAILOVER DIAGNOSTICS ===")
@@ -383,9 +465,13 @@ def diagnose(cfg, secrets):
         print(f"  MAIN  {svc['main_iran_ip']}: {format_probe(mainp)}")
         print(f"  SPARE {svc['spare_iran_ip']}: {format_probe(sparep)} wssEdge={'OK' if sparep.get('wss_edge') else 'FAIL'}")
         print(f"  Foreign ping MAIN={'OK' if ping(svc['main_foreign_ip']) else 'FAIL'} SPARE={'OK' if ping(svc['spare_foreign_ip']) else 'FAIL'}")
+        if svc.get("test_record_id") and svc.get("test_domain"):
+            trec = cf_record(secrets, cfg["cloudflare"]["zone_id"], svc["test_record_id"])
+            print(f"  TEST DNS {svc['test_domain']} -> {trec['content']}")
         if not (mainp["healthy"] and sparep["healthy"] and known_dns):
             ok = False
     return 0 if ok else 2
+
 
 def main():
     cfg = load_json(CFG_PATH)
@@ -421,6 +507,7 @@ def main():
             send_tg(secrets, f"⚠️ Maya Failover Controller error: {e}")
         elapsed = time.monotonic() - started
         time.sleep(max(1, interval - elapsed))
+
 
 if __name__ == "__main__":
     main()
