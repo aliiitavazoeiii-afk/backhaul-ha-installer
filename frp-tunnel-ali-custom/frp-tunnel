@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP="frp-tunnel-ali"
+ETC="/etc/${APP}"
+SERVICE="${APP}.service"
+META="$ETC/meta.env"
+
+R=$'\033[0m'; B=$'\033[1m'; C=$'\033[36m'; G=$'\033[32m'; Y=$'\033[33m'; RED=$'\033[31m'; D=$'\033[2m'
+
+[[ -f "$META" ]] || { echo "Not installed: $META missing" >&2; exit 1; }
+source "$META"
+
+line(){ printf '%*s\n' 64 '' | tr ' ' '─'; }
+state_dot(){ [[ "$1" == "up" ]] && printf '%s●%s' "$G" "$R" || printf '%s●%s' "$RED" "$R"; }
+svc_state(){ systemctl is-active --quiet "$SERVICE" && echo up || echo down; }
+
+banner(){
+  clear 2>/dev/null || true
+  cat <<EOT
+${B}${C}╔══════════════════════════════════════════════════════════════╗
+║  FRP TUNNEL — ALI TAVAZOEI CUSTOM VERSION                  ║
+╚══════════════════════════════════════════════════════════════╝${R}
+Role: ${B}${ROLE^^}${R}     Profile: ${PROFILE:-stable}     Core: FRP ${FRP_VERSION:-unknown}
+EOT
+}
+
+resolved_iran_ip(){ getent ahostsv4 "$DOMAIN" 2>/dev/null | awk 'NR==1{print $1}' || true; }
+tcp_test(){ local host="$1" port="$2"; timeout 2 bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1; }
+
+health() {
+  local failed=0 active dns_ip conn_count=0
+  active="$(svc_state)"
+  echo
+  line
+  printf '%-25s %s %s\n' "systemd service" "$(state_dot "$active")" "$active"
+
+  if [[ "$ROLE" == "iran" ]]; then
+    local cstate pstate
+    ss -H -ltn "sport = :$CONTROL_PORT" 2>/dev/null | grep -q . && cstate=up || cstate=down
+    ss -H -ltn "sport = :$PUBLIC_PORT" 2>/dev/null | grep -q . && pstate=up || pstate=down
+    printf '%-25s %s %s:%s\n' "WSS/TLS control" "$(state_dot "$cstate")" "$IRAN_IP" "$CONTROL_PORT"
+    printf '%-25s %s %s:%s\n' "User TCP listener" "$(state_dot "$pstate")" "$IRAN_IP" "$PUBLIC_PORT"
+    conn_count="$(ss -Htn state established "sport = :$PUBLIC_PORT" 2>/dev/null | wc -l | tr -d ' ')"
+    printf '%-25s   %s\n' "User TCP sessions" "$conn_count"
+    [[ "$active" == up && "$cstate" == up ]] || failed=1
+  else
+    local target_state control_state proxy_state
+    tcp_test "$LOCAL_TARGET_IP" "$LOCAL_TARGET_PORT" && target_state=up || target_state=down
+    dns_ip="$(resolved_iran_ip)"
+    if [[ -n "$dns_ip" ]]; then
+      conn_count="$(ss -Htn state established dst "$dns_ip:$CONTROL_PORT" 2>/dev/null | wc -l | tr -d ' ')"
+    fi
+    (( conn_count > 0 )) && control_state=up || control_state=down
+    if /usr/local/bin/frpc status -c "$ETC/frpc.toml" 2>/dev/null | grep -Eiq 'ali-vpn-tcp.*(running|online|start|success)'; then
+      proxy_state=up
+    elif journalctl -u "$SERVICE" --since '-3 minutes' --no-pager 2>/dev/null | grep -Eq 'start proxy success|login to server success'; then
+      proxy_state=up
+    else
+      proxy_state=down
+    fi
+    printf '%-25s %s %s:%s\n' "Foreign local target" "$(state_dot "$target_state")" "$LOCAL_TARGET_IP" "$LOCAL_TARGET_PORT"
+    printf '%-25s %s %s:%s (%s)\n' "Control connection" "$(state_dot "$control_state")" "$DOMAIN" "$CONTROL_PORT" "${dns_ip:-unresolved}"
+    printf '%-25s %s %s\n' "FRP proxy state" "$(state_dot "$proxy_state")" "ali-vpn-tcp"
+    printf '%-25s   %s\n' "Control/work TCP conns" "$conn_count"
+    [[ "$active" == up && "$target_state" == up && "$control_state" == up ]] || failed=1
+  fi
+  line
+  return "$failed"
+}
+
+show_status() {
+  banner
+  health || true
+  echo
+  systemctl --no-pager --full status "$SERVICE" | sed -n '1,12p' || true
+}
+
+logs() { journalctl -u "$SERVICE" -f -n 80; }
+
+restart_safe() {
+  echo "This restarts only ${SERVICE}. Existing tunneled sessions can be interrupted."
+  read -r -p "Restart now? [y/N]: " ans
+  [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]] || return 0
+  systemctl restart "$SERVICE"
+  sleep 3
+  health || true
+}
+
+change_target() {
+  [[ "$ROLE" == "foreign" ]] || { echo "Available only on FOREIGN."; return 1; }
+  local ip port tmp
+  read -r -p "New local target IP [$LOCAL_TARGET_IP]: " ip
+  ip="${ip:-$LOCAL_TARGET_IP}"
+  read -r -p "New local target port [$LOCAL_TARGET_PORT]: " port
+  port="${port:-$LOCAL_TARGET_PORT}"
+  [[ "$port" =~ ^[0-9]+$ ]] && ((port>=1 && port<=65535)) || { echo "Invalid port"; return 1; }
+  if ! tcp_test "$ip" "$port"; then
+    echo "Target $ip:$port is not accepting TCP. No change made."
+    return 1
+  fi
+  cp -a "$ETC/frpc.toml" "$ETC/frpc.toml.bak.$(date +%Y%m%d-%H%M%S)"
+  tmp="$(mktemp)"
+  awk -v ip="$ip" -v port="$port" '
+    /^localIP = / {print "localIP = \"" ip "\""; next}
+    /^localPort = / {print "localPort = " port; next}
+    {print}
+  ' "$ETC/frpc.toml" > "$tmp"
+  /usr/local/bin/frpc verify -c "$tmp" || { rm -f "$tmp"; echo "Validation failed; no change."; return 1; }
+  install -m 600 "$tmp" "$ETC/frpc.toml"
+  rm -f "$tmp"
+  sed -i "s|^LOCAL_TARGET_IP=.*|LOCAL_TARGET_IP='$ip'|; s|^LOCAL_TARGET_PORT=.*|LOCAL_TARGET_PORT='$port'|" "$META"
+  echo "Config updated. Restart required to apply it."
+  restart_safe
+}
+
+pair_code() {
+  [[ "$ROLE" == "iran" ]] || { echo "PAIR CODE exists only on IRAN."; return 1; }
+  [[ -f "$ETC/pair-code.txt" ]] || { echo "Pair code file missing."; return 1; }
+  echo; cat "$ETC/pair-code.txt"; echo
+}
+
+show_dashboard() {
+  if [[ "$ROLE" == "iran" && -f "$ETC/dashboard.txt" ]]; then
+    cat "$ETC/dashboard.txt"
+  elif [[ "$ROLE" == "foreign" ]]; then
+    echo "Foreign local FRPC admin: http://127.0.0.1:7400"
+  fi
+}
+
+show_config() {
+  local cfg
+  [[ "$ROLE" == "iran" ]] && cfg="$ETC/frps.toml" || cfg="$ETC/frpc.toml"
+  sed -E 's/(auth\.token = ).*/\1"***REDACTED***"/; s/(webServer\.password = ).*/\1"***REDACTED***"/' "$cfg"
+}
+
+uninstall_app() {
+  echo "This removes the FRP Ali service/config. It does NOT touch Xray/3x-ui."
+  read -r -p "Type REMOVE to continue: " ans
+  [[ "$ans" == "REMOVE" ]] || return 0
+  systemctl disable --now "$SERVICE" 2>/dev/null || true
+  rm -f "/etc/systemd/system/$SERVICE"
+  systemctl daemon-reload
+  rm -rf "$ETC"
+  rm -f /usr/local/bin/frp-tunnel
+  echo "Removed. FRP core binaries were left in /usr/local/bin for safety."
+}
+
+menu() {
+  while true; do
+    banner
+    local s; s="$(svc_state)"
+    echo "Service: $(state_dot "$s") $s"
+    echo
+    echo "  1) Status + health"
+    echo "  2) Live logs"
+    echo "  3) Restart service"
+    [[ "$ROLE" == "foreign" ]] && echo "  4) Change Foreign local target"
+    [[ "$ROLE" == "iran" ]] && echo "  4) Show PAIR CODE"
+    echo "  5) Dashboard access info"
+    echo "  6) Show sanitized config"
+    echo "  7) Uninstall"
+    echo "  0) Exit"
+    echo
+    read -r -p "Select: " n
+    case "$n" in
+      1) show_status; read -r -p "Enter to continue..." _ ;;
+      2) logs ;;
+      3) restart_safe; read -r -p "Enter to continue..." _ ;;
+      4) [[ "$ROLE" == "foreign" ]] && change_target || pair_code; read -r -p "Enter to continue..." _ ;;
+      5) show_dashboard; read -r -p "Enter to continue..." _ ;;
+      6) show_config; read -r -p "Enter to continue..." _ ;;
+      7) uninstall_app; return ;;
+      0) return ;;
+      *) sleep 1 ;;
+    esac
+  done
+}
+
+case "${1:-menu}" in
+  menu) menu ;;
+  status) show_status ;;
+  health) health ;;
+  logs) logs ;;
+  restart) restart_safe ;;
+  target) change_target ;;
+  pair-code) pair_code ;;
+  config) show_config ;;
+  *) echo "Usage: frp-tunnel [menu|status|health|logs|restart|target|pair-code|config]"; exit 2 ;;
+esac
