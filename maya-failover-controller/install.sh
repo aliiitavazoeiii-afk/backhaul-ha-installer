@@ -36,7 +36,7 @@ for name in maya1.biya2film.top maya3.biya2film.top; do
   rip="$(jq -r '.result[0].content // empty' <<<"$rjson")"
   [[ -n "$rid" ]] || { echo "Missing Cloudflare A record: $name" >&2; exit 1; }
   case "$name:$rip" in
-    maya1.biya2film.top:185.215.230.204|maya1.biya2film.top:185.215.230.207|maya3.biya2film.top:94.184.4.38|maya3.biya2film.top:5.10.248.50) ;;
+    maya1.biya2film.top:185.215.230.204|maya1.biya2film.top:5.10.248.50|maya3.biya2film.top:94.184.4.38|maya3.biya2film.top:185.215.230.207) ;;
     *) echo "Refusing install: $name currently points to unexpected IP $rip" >&2; exit 1 ;;
   esac
   RECORD_IDS["$name"]="$rid"
@@ -89,9 +89,9 @@ cat >"$ETC/config.json" <<EOF
       "record_id": "${RECORD_IDS[maya1.biya2film.top]}",
       "main_iran_ip": "185.215.230.204",
       "main_foreign_ip": "193.57.9.31",
-      "spare_iran_ip": "185.215.230.207",
-      "spare_foreign_ip": "193.57.9.212",
-      "spare_domain": "zapasmaya1.biya2film.top",
+      "spare_iran_ip": "5.10.248.50",
+      "spare_foreign_ip": "193.57.9.181",
+      "spare_domain": "zapasmaya3.biya2film.top",
       "spare_wss_port": 8443,
       "reality_sni": "swscan.apple.com"
     },
@@ -100,9 +100,9 @@ cat >"$ETC/config.json" <<EOF
       "record_id": "${RECORD_IDS[maya3.biya2film.top]}",
       "main_iran_ip": "94.184.4.38",
       "main_foreign_ip": "193.57.9.167",
-      "spare_iran_ip": "5.10.248.50",
-      "spare_foreign_ip": "193.57.9.181",
-      "spare_domain": "zapasmaya3.biya2film.top",
+      "spare_iran_ip": "185.215.230.207",
+      "spare_foreign_ip": "193.57.9.212",
+      "spare_domain": "zapasmaya1.biya2film.top",
       "spare_wss_port": 8443,
       "reality_sni": "swscan.apple.com"
     }
