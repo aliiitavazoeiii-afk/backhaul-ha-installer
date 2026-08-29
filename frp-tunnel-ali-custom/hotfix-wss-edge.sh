@@ -17,7 +17,7 @@ warn(){ echo "${Y}!!${R}  $*"; }
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || die "Run as root."
 [[ -r "$ETC/meta.env" ]] || die "Missing $ETC/meta.env; install v0.2.0-rc1 first."
-# shellcheck disable=SC1090
+# shellcheck disable=SC1090,SC1091
 source "$ETC/meta.env"
 
 ROLE="${ROLE,,}"
