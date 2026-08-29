@@ -55,7 +55,7 @@ Upstream FRP WSS uses the fixed WebSocket path `/~!frp`, which is encrypted insi
 - Restart is explicit and confirmed.
 - Rollback validates the archived config first.
 - Uninstall removes only this project's service/config/runtime and preserves backups.
-- Production bootstrap is pinned to an immutable Git commit.
+- Release-candidate bootstrap is pinned to an immutable Git commit.
 
 ## Install order
 
@@ -70,10 +70,10 @@ Upstream FRP WSS uses the fixed WebSocket path `/~!frp`, which is encrypted insi
 Use this exact immutable command on Iran first and then Foreign:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/1dddc694c2216fe139250db8410f716aa223dbc7/frp-tunnel-ali-custom/bootstrap.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/383991b656c3a9aad512cb61537e440fe77b7153/frp-tunnel-ali-custom/bootstrap.sh)
 ```
 
-The bootstrap at `1dddc694...` pins installer + CLI content to snapshot `88418b551198ca590b01be52773ae4eb5c9c0e6e`.
+The bootstrap at `383991b6...` pins installer + CLI content to the CI-green snapshot `b0abae55f40436ead400acd4e38f84788c25ab18`.
 
 ### Development branch installer
 
