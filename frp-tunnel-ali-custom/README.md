@@ -65,15 +65,23 @@ Upstream FRP WSS uses the fixed WebSocket path `/~!frp`, which is encrypted insi
 4. Install **Foreign**, paste the pair code and select the existing loopback Xray target.
 5. The Foreign installer requires verified TLS and runs an end-to-end public-port health gate.
 
+### Pinned release-candidate install
+
+Use this exact immutable command on Iran first and then Foreign:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/1dddc694c2216fe139250db8410f716aa223dbc7/frp-tunnel-ali-custom/bootstrap.sh)
+```
+
+The bootstrap at `1dddc694...` pins installer + CLI content to snapshot `88418b551198ca590b01be52773ae4eb5c9c0e6e`.
+
 ### Development branch installer
 
-For lab development only:
+For branch testing only (not immutable):
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/agent/frp-tunnel-ali-custom-v2/frp-tunnel-ali-custom/install.sh)
 ```
-
-A pinned production bootstrap URL is added after the release-candidate content commit is frozen.
 
 ## Management CLI
 
