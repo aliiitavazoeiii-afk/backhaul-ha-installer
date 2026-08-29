@@ -11,9 +11,9 @@ grep -q 'transport.tls.trustedCaFile = "/etc/ssl/certs/ca-certificates.crt"' "$R
 grep -q 'transport.tls.certFile = ' "$ROOT/install.sh"
 grep -q 'auth.additionalScopes = \["HeartBeats", "NewWorkConns"\]' "$ROOT/install.sh"
 grep -q 'auth.tokenSource.type = "file"' "$ROOT/install.sh"
-! grep -q 'auth.token = ' "$ROOT/install.sh"
-! grep -q 'install .*"/usr/local/bin/frps"' "$ROOT/install.sh"
-! grep -q 'install .*"/usr/local/bin/frpc"' "$ROOT/install.sh"
+if grep -q 'auth.token = ' "$ROOT/install.sh"; then echo "inline token found" >&2; exit 1; fi
+if grep -q 'install .*"/usr/local/bin/frps"' "$ROOT/install.sh"; then echo "generic frps path found" >&2; exit 1; fi
+if grep -q 'install .*"/usr/local/bin/frpc"' "$ROOT/install.sh"; then echo "generic frpc path found" >&2; exit 1; fi
 grep -q 'End-to-end TCP path' "$ROOT/frp-tunnel"
 grep -q 'STATUS: 🟢 READY FOR TRAFFIC' "$ROOT/frp-tunnel"
 
