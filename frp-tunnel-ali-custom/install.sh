@@ -524,7 +524,9 @@ install_foreign() {
   valid_port "$PUBLIC_PORT" || die "Invalid public user port."
   valid_local_host "$LOCAL_TARGET_IP" || die "Local target must be localhost/loopback IPv4/::1 in v2."
   valid_port "$LOCAL_TARGET_PORT" || die "Invalid local target port."
-  [[ "$POOL_COUNT" =~ ^[0-9]+$ ]] && ((10#$POOL_COUNT >= 4 && 10#$POOL_COUNT <= 64)) || die "Pool count must be 4..64."
+  if ! [[ "$POOL_COUNT" =~ ^[0-9]+$ ]] || ! ((10#$POOL_COUNT >= 4 && 10#$POOL_COUNT <= 64)); then
+    die "Pool count must be 4..64."
+  fi
   [[ "$TOKEN" =~ ^[0-9a-f]{64}$ ]] || die "Token must be 64 lowercase hex characters."
 
   maybe_confirm_reconfigure
