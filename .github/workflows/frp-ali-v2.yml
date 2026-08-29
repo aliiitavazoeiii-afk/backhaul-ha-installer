@@ -29,6 +29,7 @@ jobs:
             frp-tunnel-ali-custom/install.sh \
             frp-tunnel-ali-custom/frp-tunnel \
             frp-tunnel-ali-custom/bootstrap.sh \
+            frp-tunnel-ali-custom/hotfix-wss-edge.sh \
             frp-tunnel-ali-custom/tests/*.sh
       - name: FRP v0.71.0 config schema smoke test
         run: frp-tunnel-ali-custom/tests/config-smoke.sh
