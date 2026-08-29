@@ -5,7 +5,7 @@ set -Eeuo pipefail
 # compatibility hotfix after installation. FRP upstream requires WSS to terminate
 # at a reverse proxy before plaintext WebSocket reaches frps.
 RUNTIME_PIN="b0abae55f40436ead400acd4e38f84788c25ab18"
-HOTFIX_PIN="1bafc36c6da1c9f22a78c4cedf005c6d0986fbb9"
+HOTFIX_PIN="c0d6c8bff6360a390107ceb73ad34eb1771489ab"
 REPO="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer"
 TMP_INSTALL="$(mktemp)"
 TMP_HOTFIX="$(mktemp)"
