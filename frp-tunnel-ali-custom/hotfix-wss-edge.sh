@@ -157,15 +157,9 @@ openssl s_client -connect "${IRAN_IP}:${CONTROL_PORT}" -servername "$DOMAIN" \
   -CAfile /etc/ssl/certs/ca-certificates.crt -verify_return_error </dev/null >/dev/null 2>&1 ||
   die "Public TLS verification failed after nginx edge start."
 
-WS_OUT="$(timeout 5 openssl s_client -quiet -connect "${IRAN_IP}:${CONTROL_PORT}" -servername "$DOMAIN" 2>/dev/null <<EOF || true
-GET /~!frp HTTP/1.1
-Host: ${DOMAIN}
-Upgrade: websocket
-Connection: Upgrade
-Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
-Sec-WebSocket-Version: 13
-
-EOF
+WS_OUT="$(
+  printf 'GET /~!frp HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n' "$DOMAIN" |
+    timeout 5 openssl s_client -quiet -connect "${IRAN_IP}:${CONTROL_PORT}" -servername "$DOMAIN" 2>/dev/null || true
 )"
 grep -q "101 Switching Protocols" <<<"$WS_OUT" || die "WSS upgrade did not reach FRPS through nginx."
 
