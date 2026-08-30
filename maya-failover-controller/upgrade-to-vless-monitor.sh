@@ -49,6 +49,8 @@ TMP_ZIP="$(mktemp)"
 TMP_CFG="$(mktemp)"
 TMP_CONTROLLER="$(mktemp)"
 trap 'rm -f "$TMP_ZIP" "$TMP_CFG" "$TMP_CONTROLLER"' EXIT
+
+# Prepare every replacement before stopping the old monitor.
 curl -fL --retry 4 --retry-delay 2 \
   "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${XRAY_ASSET}" \
   -o "$TMP_ZIP"
@@ -56,12 +58,8 @@ unzip -p "$TMP_ZIP" xray > "$BIN/xray"
 chmod 0755 "$BIN/xray"
 "$BIN/xray" version | head -n 1
 
-cat >"$ETC/vless.env" <<EOF
-MAYA1_VLESS=${MAYA1_VLESS}
-MAYA3_VLESS=${MAYA3_VLESS}
-EOF
-chmod 0600 "$ETC/vless.env"
-unset MAYA1_VLESS MAYA3_VLESS
+curl -fsSL --retry 4 "$CONTROLLER_URL" -o "$TMP_CONTROLLER"
+python3 -m py_compile "$TMP_CONTROLLER"
 
 jq '
 {
@@ -94,10 +92,18 @@ for key in \
   v="$(jq -r "$key // empty" "$TMP_CFG")"
   [[ -n "$v" ]] || { echo "Missing required config value: $key" >&2; exit 1; }
 done
-install -m 0600 "$TMP_CFG" "$ETC/config.json"
 
-curl -fsSL --retry 4 "$CONTROLLER_URL" -o "$TMP_CONTROLLER"
-python3 -m py_compile "$TMP_CONTROLLER"
+# Stop only the management monitor. This does not touch VPN/FRP/Xray on Maya nodes.
+systemctl stop "$SERVICE" 2>/dev/null || true
+
+cat >"$ETC/vless.env" <<EOF
+MAYA1_VLESS=${MAYA1_VLESS}
+MAYA3_VLESS=${MAYA3_VLESS}
+EOF
+chmod 0600 "$ETC/vless.env"
+unset MAYA1_VLESS MAYA3_VLESS
+
+install -m 0600 "$TMP_CFG" "$ETC/config.json"
 install -m 0755 "$TMP_CONTROLLER" "$OPT/controller.py"
 
 # Keep Telegram update offset, but discard all old health/probe state.
@@ -141,7 +147,6 @@ ReadWritePaths=${STATE} /run/maya-failover
 WantedBy=multi-user.target
 EOF
 
-systemctl stop "$SERVICE" 2>/dev/null || true
 systemctl daemon-reload
 
 echo
