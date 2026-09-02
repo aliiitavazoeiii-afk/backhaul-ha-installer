@@ -1,0 +1,393 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP="frp-tunnel-ali"
+BRAND="FRP TUNNEL — ALI TAVAZOEI CUSTOM VERSION"
+ETC="/etc/${APP}"
+STATE="/var/lib/${APP}"
+OPT="/opt/${APP}"
+SERVICE="${APP}.service"
+META="$ETC/meta.env"
+FRPS="$OPT/bin/frps"
+FRPC="$OPT/bin/frpc"
+
+R=$'\033[0m'; B=$'\033[1m'; C=$'\033[36m'; G=$'\033[32m'; Y=$'\033[33m'; RED=$'\033[31m'
+
+[[ -f "$META" ]] || { echo "Not installed: $META missing" >&2; exit 1; }
+# meta.env is generated with printf %q by the installer.
+# shellcheck disable=SC1090
+source "$META"
+
+line(){ printf '%*s\n' 70 '' | tr ' ' '─'; }
+dot(){ case "$1" in up) printf '%s●%s' "$G" "$R";; wait|degraded) printf '%s●%s' "$Y" "$R";; *) printf '%s●%s' "$RED" "$R";; esac; }
+svc_state(){ systemctl is-active --quiet "$SERVICE" && echo up || echo down; }
+service_pid(){ systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true; }
+tcp_test(){ local h="$1" p="$2"; timeout 3 bash -c "</dev/tcp/${h}/${p}" >/dev/null 2>&1; }
+
+banner() {
+  clear 2>/dev/null || true
+  cat <<EOT
+${B}${C}╔════════════════════════════════════════════════════════════════╗
+║  ${BRAND}                   ║
+╚════════════════════════════════════════════════════════════════╝${R}
+Role: ${B}${ROLE^^}${R}   Profile: ${PROFILE:-normal}   App: ${APP_VERSION:-unknown}   Core: FRP ${FRP_VERSION:-unknown}
+EOT
+}
+
+resolved_iran_ips() {
+  getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u
+}
+
+domain_points_to_iran() {
+  resolved_iran_ips | grep -Fxq "$IRAN_IP"
+}
+
+process_control_conns() {
+  local pid
+  pid="$(service_pid)"
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] || { echo 0; return; }
+  ss -Htnp state established 2>/dev/null |
+    awk -v pid="$pid" -v p=":$CONTROL_PORT" '$0 ~ ("pid=" pid ",") && $0 ~ p {n++} END{print n+0}'
+}
+
+proxy_state() {
+  if "$FRPC" status -c "$ETC/frpc.toml" 2>/dev/null | grep -Eiq "ali-vpn-${PROFILE}.*(running|online|start|success)"; then
+    echo up
+  elif journalctl -u "$SERVICE" --since '-5 minutes' --no-pager 2>/dev/null |
+       grep -Eq 'start proxy success|login to server success'; then
+    echo up
+  else
+    echo down
+  fi
+}
+
+cert_days_left() {
+  local cert="$1" end epoch now
+  [[ -r "$cert" ]] || { echo -1; return; }
+  end="$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2-)" || { echo -1; return; }
+  epoch="$(date -d "$end" +%s 2>/dev/null)" || { echo -1; return; }
+  now="$(date +%s)"
+  echo $(( (epoch-now) / 86400 ))
+}
+
+tls_remote_ok() {
+  timeout 8 openssl s_client \
+    -connect "${DOMAIN}:${CONTROL_PORT}" \
+    -servername "$DOMAIN" \
+    -CAfile /etc/ssl/certs/ca-certificates.crt \
+    -verify_return_error </dev/null >/dev/null 2>&1
+}
+
+recent_reconnects() {
+  journalctl -u "$SERVICE" --since '-1 hour' --no-pager 2>/dev/null |
+    grep -Eic 'login to server success|reconnect|connection.*closed|connect to server error' || true
+}
+
+health() {
+  local active failed=0 waiting=0
+  active="$(svc_state)"
+  echo
+  line
+  printf '%-29s %s %s\n' "systemd service" "$(dot "$active")" "$active"
+
+  if [[ "$ROLE" == "iran" ]]; then
+    local cstate pstate dnsstate certstate days users
+    ss -H -ltn "sport = :$CONTROL_PORT" 2>/dev/null | grep -q . && cstate=up || cstate=down
+    if ss -H -ltn "sport = :$PUBLIC_PORT" 2>/dev/null | grep -q .; then
+      pstate=up
+    elif journalctl -u "$SERVICE" -b --no-pager 2>/dev/null | grep -Eq 'new proxy .*success|start proxy success'; then
+      pstate=down
+    else
+      pstate="wait"
+    fi
+    domain_points_to_iran && dnsstate=up || dnsstate=down
+    days="$(cert_days_left "$TLS_CERT")"
+    if ((days >= 7)); then certstate=up; elif ((days >= 0)); then certstate=degraded; else certstate=down; fi
+    users="$(ss -Htn state established "sport = :$PUBLIC_PORT" 2>/dev/null | wc -l | tr -d ' ')"
+
+    printf '%-29s %s %s:%s\n' "WSS/TLS control listener" "$(dot "$cstate")" "$IRAN_IP" "$CONTROL_PORT"
+    printf '%-29s %s %s:%s\n' "Public user listener" "$(dot "$pstate")" "$IRAN_IP" "$PUBLIC_PORT"
+    printf '%-29s %s %s -> %s\n' "DNS directness" "$(dot "$dnsstate")" "$DOMAIN" "$IRAN_IP"
+    printf '%-29s %s %s days\n' "TLS certificate validity" "$(dot "$certstate")" "$days"
+    printf '%-29s   %s\n' "Established user sessions" "$users"
+
+    [[ "$active" == up && "$cstate" == up && "$dnsstate" == up && "$certstate" != down ]] || failed=1
+    [[ "$pstate" == down ]] && failed=1
+    [[ "$pstate" == wait ]] && waiting=1
+  else
+    local target control proxy e2e tls dnsstate conns reconnects
+    tcp_test "$LOCAL_TARGET_IP" "$LOCAL_TARGET_PORT" && target=up || target=down
+    conns="$(process_control_conns)"
+    ((conns > 0)) && control=up || control=down
+    proxy="$(proxy_state)"
+    tcp_test "$DOMAIN" "$PUBLIC_PORT" && e2e=up || e2e=down
+    tls_remote_ok && tls=up || tls=down
+    domain_points_to_iran && dnsstate=up || dnsstate=down
+    reconnects="$(recent_reconnects)"
+
+    printf '%-29s %s %s:%s\n' "Foreign local target" "$(dot "$target")" "$LOCAL_TARGET_IP" "$LOCAL_TARGET_PORT"
+    printf '%-29s %s %s:%s\n' "Verified WSS/TLS identity" "$(dot "$tls")" "$DOMAIN" "$CONTROL_PORT"
+    printf '%-29s %s %s -> %s\n' "DNS directness" "$(dot "$dnsstate")" "$DOMAIN" "$IRAN_IP"
+    printf '%-29s %s %s connection(s)\n' "Control/work TCP sockets" "$(dot "$control")" "$conns"
+    printf '%-29s %s ali-vpn-%s\n' "FRP proxy state" "$(dot "$proxy")" "$PROFILE"
+    printf '%-29s %s %s:%s round-trip path\n' "End-to-end TCP path" "$(dot "$e2e")" "$DOMAIN" "$PUBLIC_PORT"
+    printf '%-29s   %s event(s) / 1h\n' "Reconnect/error log signals" "$reconnects"
+
+    [[ "$active" == up && "$target" == up && "$tls" == up && "$dnsstate" == up &&
+       "$control" == up && "$proxy" == up && "$e2e" == up ]] || failed=1
+  fi
+
+  line
+  if ((failed)); then
+    printf '%sSTATUS: 🔴 NOT READY%s\n' "$RED" "$R"
+    return 1
+  fi
+  if ((waiting)); then
+    printf '%sSTATUS: 🟡 CONTROL READY — WAITING FOR FOREIGN PROXY%s\n' "$Y" "$R"
+    return 2
+  fi
+  printf '%sSTATUS: 🟢 READY FOR TRAFFIC%s\n' "$G" "$R"
+  return 0
+}
+
+show_status() {
+  banner
+  health || true
+  echo
+  systemctl --no-pager --full status "$SERVICE" | sed -n '1,14p' || true
+}
+
+logs(){ journalctl -u "$SERVICE" -f -n 100; }
+
+restart_safe() {
+  echo "This restarts only ${SERVICE}; active tunneled sessions may be interrupted."
+  if [[ "$ROLE" == "iran" ]]; then
+    local n
+    n="$(ss -Htn state established "sport = :$PUBLIC_PORT" 2>/dev/null | wc -l | tr -d ' ')"
+    echo "Current established public sessions: $n"
+  fi
+  read -r -p "Type RESTART to continue: " ans
+  [[ "$ans" == "RESTART" ]] || return 0
+  systemctl restart "$SERVICE"
+  sleep 3
+  health || true
+}
+
+backup_now() {
+  local ts out
+  mkdir -p "$STATE/backups"
+  chmod 0700 "$STATE" "$STATE/backups"
+  ts="$(date +%Y%m%d-%H%M%S)"
+  out="$STATE/backups/etc-${ts}.tar.gz"
+  tar -C / -czf "$out" "${ETC#/}"
+  chmod 0600 "$out"
+  echo "Backup: $out"
+}
+
+list_backups() {
+  ls -1t "$STATE"/backups/etc-*.tar.gz 2>/dev/null || echo "No backups."
+}
+
+rollback_latest() {
+  local b tmp cfg
+  b="$(find "$STATE/backups" -maxdepth 1 -type f -name 'etc-*.tar.gz' -printf '%T@ %p\n' 2>/dev/null |
+       sort -nr | head -n1 | cut -d' ' -f2- || true)"
+  [[ -n "$b" ]] || { echo "No backup available."; return 1; }
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+  tar -xzf "$b" -C "$tmp"
+  if [[ "$ROLE" == "iran" ]]; then cfg="$tmp/$ETC/frps.toml"; else cfg="$tmp/$ETC/frpc.toml"; fi
+  [[ -f "$cfg" ]] || { echo "Backup does not contain the expected role config."; return 1; }
+  if [[ "$ROLE" == "iran" ]]; then
+    "$FRPS" verify -c "$cfg" >/dev/null || { echo "Backup config validation failed."; return 1; }
+  else
+    "$FRPC" verify -c "$cfg" >/dev/null || { echo "Backup config validation failed."; return 1; }
+  fi
+  echo "Latest validated backup: $b"
+  read -r -p "Type ROLLBACK to restore it and restart: " ans
+  [[ "$ans" == "ROLLBACK" ]] || return 0
+  backup_now >/dev/null
+  rm -rf "$ETC"
+  cp -a "$tmp/$ETC" "$ETC"
+  systemctl restart "$SERVICE"
+  sleep 3
+  health || true
+  rm -rf "$tmp"
+  trap - RETURN
+}
+
+change_target() {
+  [[ "$ROLE" == "foreign" ]] || { echo "Available only on FOREIGN."; return 1; }
+  local ip port tmp
+  read -r -p "New local target IP [$LOCAL_TARGET_IP]: " ip
+  ip="${ip:-$LOCAL_TARGET_IP}"
+  read -r -p "New local target port [$LOCAL_TARGET_PORT]: " port
+  port="${port:-$LOCAL_TARGET_PORT}"
+  [[ "$ip" == "localhost" || "$ip" == "127."* || "$ip" == "::1" ]] || { echo "v2 only permits loopback/local targets."; return 1; }
+  if ! [[ "$port" =~ ^[0-9]+$ ]] || ! ((10#$port>=1 && 10#$port<=65535)); then
+    echo "Invalid port."
+    return 1
+  fi
+  tcp_test "$ip" "$port" || { echo "Target $ip:$port is not accepting TCP. No change made."; return 1; }
+
+  backup_now >/dev/null
+  tmp="$(mktemp)"
+  awk -v ip="$ip" -v port="$port" '
+    /^localIP = / {print "localIP = \"" ip "\""; next}
+    /^localPort = / {print "localPort = " port; next}
+    {print}
+  ' "$ETC/frpc.toml" >"$tmp"
+  "$FRPC" verify -c "$tmp" >/dev/null || { rm -f "$tmp"; echo "Validation failed; no change."; return 1; }
+  install -m 0600 "$tmp" "$ETC/frpc.toml"
+  rm -f "$tmp"
+  {
+    printf 'LOCAL_TARGET_IP=%q\n' "$ip"
+    printf 'LOCAL_TARGET_PORT=%q\n' "$port"
+  } >/tmp/frp-ali-meta-target.$$
+  awk -v f="/tmp/frp-ali-meta-target.$$" '
+    BEGIN{while((getline l < f)>0){split(l,a,"="); v[a[1]]=substr(l,length(a[1])+2)}}
+    /^LOCAL_TARGET_IP=/{print "LOCAL_TARGET_IP=" v["LOCAL_TARGET_IP"]; next}
+    /^LOCAL_TARGET_PORT=/{print "LOCAL_TARGET_PORT=" v["LOCAL_TARGET_PORT"]; next}
+    {print}
+  ' "$META" >"$META.new"
+  install -m 0600 "$META.new" "$META"
+  rm -f "$META.new" /tmp/frp-ali-meta-target.$$
+  echo "Validated config updated; restart required."
+  restart_safe
+}
+
+pair_code() {
+  [[ "$ROLE" == "iran" ]] || { echo "PAIR CODE exists only on IRAN."; return 1; }
+  [[ -f "$ETC/pair-code.txt" ]] || { echo "Pair code file missing."; return 1; }
+  echo "PAIR CODE is a secret because it contains the tunnel token."
+  cat "$ETC/pair-code.txt"
+}
+
+show_dashboard() {
+  [[ -f "$ETC/dashboard.txt" ]] && cat "$ETC/dashboard.txt" || echo "Dashboard info unavailable."
+}
+
+show_config() {
+  local cfg
+  [[ "$ROLE" == "iran" ]] && cfg="$ETC/frps.toml" || cfg="$ETC/frpc.toml"
+  sed -E 's/(webServer\.password = ).*/\1"***REDACTED***"/' "$cfg"
+  echo
+  echo "Token is stored separately at $ETC/token and is not displayed."
+}
+
+cert_status() {
+  if [[ "$ROLE" == "iran" ]]; then
+    openssl x509 -in "$TLS_CERT" -noout -subject -issuer -dates -fingerprint -sha256
+  else
+    timeout 8 openssl s_client -connect "${DOMAIN}:${CONTROL_PORT}" -servername "$DOMAIN" \
+      -CAfile /etc/ssl/certs/ca-certificates.crt -verify_return_error </dev/null 2>&1 |
+      sed -n '/subject=/p;/issuer=/p;/Verify return code/p'
+  fi
+}
+
+diagnostics() {
+  banner
+  echo "=== HEALTH ==="
+  health || true
+  echo
+  echo "=== SERVICE ==="
+  systemctl --no-pager --full status "$SERVICE" | sed -n '1,24p' || true
+  echo
+  echo "=== SOCKET SUMMARY ==="
+  ss -s || true
+  echo
+  if [[ "$ROLE" == "iran" ]]; then
+    echo "=== RELATED LISTENERS / CONNECTIONS ==="
+    ss -ltnp "( sport = :$CONTROL_PORT or sport = :$PUBLIC_PORT )" 2>/dev/null || true
+    ss -tin state established "sport = :$PUBLIC_PORT" 2>/dev/null | head -120 || true
+  else
+    echo "=== FRPC CONNECTIONS ==="
+    local pid
+    pid="$(service_pid)"
+    ss -tinp state established 2>/dev/null | grep -A1 -B1 "pid=${pid}," | head -160 || true
+  fi
+  echo
+  echo "=== TCP COUNTERS (read-only) ==="
+  if command -v nstat >/dev/null; then
+    nstat -az 2>/dev/null | grep -E 'TcpRetransSegs|TcpExtTCPTimeouts|TcpExtTCPSynRetrans|TcpExtTCPFastRetrans' || true
+  fi
+  echo
+  echo "=== RECENT LOGS ==="
+  journalctl -u "$SERVICE" --since '-10 minutes' --no-pager | tail -160 || true
+}
+
+uninstall_app() {
+  echo "This removes only FRP Ali service/config/runtime files."
+  echo "It does NOT touch Xray/3x-ui and preserves backups under $STATE/backups."
+  read -r -p "Type REMOVE to continue: " ans
+  [[ "$ans" == "REMOVE" ]] || return 0
+  systemctl disable --now "$SERVICE" 2>/dev/null || true
+  rm -f "/etc/systemd/system/$SERVICE"
+  systemctl daemon-reload
+  rm -rf "$ETC" "$OPT"
+  rm -f /usr/local/bin/frp-tunnel
+  echo "Removed. Backups preserved at $STATE/backups."
+}
+
+menu() {
+  while true; do
+    banner
+    local s; s="$(svc_state)"
+    echo "Service: $(dot "$s") $s"
+    echo
+    echo "  1) Status + health"
+    echo "  2) Live logs"
+    echo "  3) Diagnostics"
+    echo "  4) Backup config"
+    echo "  5) List backups"
+    echo "  6) Rollback latest backup"
+    echo "  7) TLS certificate status"
+    echo "  8) Restart service (confirmed)"
+    [[ "$ROLE" == "foreign" ]] && echo "  9) Change Foreign local target"
+    [[ "$ROLE" == "iran" ]] && echo "  9) Show PAIR CODE"
+    echo " 10) Dashboard access info"
+    echo " 11) Show sanitized config"
+    echo " 12) Uninstall"
+    echo "  0) Exit"
+    echo
+    read -r -p "Select: " n
+    case "$n" in
+      1) show_status; read -r -p "Enter to continue..." _ ;;
+      2) logs ;;
+      3) diagnostics; read -r -p "Enter to continue..." _ ;;
+      4) backup_now; read -r -p "Enter to continue..." _ ;;
+      5) list_backups; read -r -p "Enter to continue..." _ ;;
+      6) rollback_latest; read -r -p "Enter to continue..." _ ;;
+      7) cert_status; read -r -p "Enter to continue..." _ ;;
+      8) restart_safe; read -r -p "Enter to continue..." _ ;;
+      9)
+        if [[ "$ROLE" == "foreign" ]]; then change_target; else pair_code; fi
+        read -r -p "Enter to continue..." _
+        ;;
+      10) show_dashboard; read -r -p "Enter to continue..." _ ;;
+      11) show_config; read -r -p "Enter to continue..." _ ;;
+      12) uninstall_app; return ;;
+      0) return ;;
+      *) sleep 1 ;;
+    esac
+  done
+}
+
+case "${1:-menu}" in
+  menu) menu ;;
+  status) show_status ;;
+  health) health ;;
+  logs) logs ;;
+  diagnostics|doctor) diagnostics ;;
+  backup) backup_now ;;
+  backups) list_backups ;;
+  rollback) rollback_latest ;;
+  restart) restart_safe ;;
+  target) change_target ;;
+  pair-code) pair_code ;;
+  cert) cert_status ;;
+  dashboard) show_dashboard ;;
+  config) show_config ;;
+  uninstall) uninstall_app ;;
+  *) echo "Usage: frp-tunnel [menu|status|health|logs|diagnostics|backup|backups|rollback|restart|target|pair-code|cert|dashboard|config|uninstall]"; exit 2 ;;
+esac
