@@ -31,4 +31,12 @@ jobs:
           grep -q 'worker_connections 65535' frp-tunnel-ali-shared/install.sh
           grep -q 'MAYA1_PORT=14431' frp-tunnel-ali-shared/install.sh
           grep -q 'MAYA3_PORT=14433' frp-tunnel-ali-shared/install.sh
-          grep -q "ExecStartPost=/bin/sh -c '/usr/local/bin/frp-shared-select restore || true'" frp-tunnel-ali-shared/bootstrap.sh
+      - name: Drain-safe switch invariant
+        run: |
+          grep -q 'enable server maya_slots/$slot' frp-tunnel-ali-shared/bootstrap.sh
+          grep -q 'disable server maya_slots/$other' frp-tunnel-ali-shared/bootstrap.sh
+          python3 - <<'PY'
+          from pathlib import Path
+          s = Path('frp-tunnel-ali-shared/bootstrap.sh').read_text()
+          assert s.index('echo "enable server maya_slots/$slot"') < s.index('echo "disable server maya_slots/$other"')
+          PY
