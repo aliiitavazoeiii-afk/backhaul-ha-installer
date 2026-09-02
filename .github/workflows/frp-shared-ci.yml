@@ -1,0 +1,32 @@
+name: FRP Ali Shared CI
+
+on:
+  push:
+    branches:
+      - agent/frp-shared-scheduled-v1
+    paths:
+      - 'frp-tunnel-ali-shared/**'
+      - 'maya-failover-controller/**'
+      - '.github/workflows/frp-shared-ci.yml'
+  pull_request:
+    paths:
+      - 'frp-tunnel-ali-shared/**'
+      - 'maya-failover-controller/**'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: |
+          bash -n frp-tunnel-ali-shared/install.sh
+          if [ -f maya-failover-controller/install-shared-schedule.sh ]; then bash -n maya-failover-controller/install-shared-schedule.sh; fi
+      - name: FRP safety invariants
+        run: |
+          grep -q 'transport.tcpMux = false' frp-tunnel-ali-shared/install.sh
+          grep -q 'transport.protocol = "wss"' frp-tunnel-ali-shared/install.sh
+          grep -q 'proxy_pass http://127.0.0.1:18443' frp-tunnel-ali-shared/install.sh
+          grep -q 'worker_connections 65535' frp-tunnel-ali-shared/install.sh
+          grep -q 'MAYA1_PORT=14431' frp-tunnel-ali-shared/install.sh
+          grep -q 'MAYA3_PORT=14433' frp-tunnel-ali-shared/install.sh
