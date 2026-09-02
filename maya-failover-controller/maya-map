@@ -41,12 +41,12 @@ show_mapping(){
   jq -r '
     .services | to_entries[] |
     .key as $name | .value as $s |
-    "\($name|ascii_upcase)\n  MAIN  IP=\($s.main_iran_ip) FRP=\($s.main_domain // \"-\")\n  SPARE IP=\($s.spare_iran_ip) FRP=\($s.spare_domain // \"-\")"
+    "\($name|ascii_upcase)\n  MAIN  IP=\($s.main_iran_ip) FRP=\($s.main_domain // "-")\n  SPARE IP=\($s.spare_iran_ip) FRP=\($s.spare_domain // "-")"
   ' "$CFG"
   echo
   if [[ -r "$STATE_JSON" ]]; then
     cyan "Last observed active state"
-    jq -r '.services // {} | to_entries[] | "\(.key|ascii_upcase): mode=\(.value.mode // \"unknown\") dns=\(.value.last_dns_ip // \"unknown\")"' "$STATE_JSON" 2>/dev/null || true
+    jq -r '.services // {} | to_entries[] | "\(.key|ascii_upcase): mode=\(.value.mode // "unknown") dns=\(.value.last_dns_ip // "unknown")"' "$STATE_JSON" 2>/dev/null || true
   fi
 }
 
@@ -113,10 +113,12 @@ set_mapping(){
   valid_ipv4 "$ip" || die "Invalid IPv4: $ip"
   valid_domain "$frp_domain" || die "Invalid FRP domain: $frp_domain"
 
-  local old_ip old_domain current_dns other_role other_ip backup tmp was_active=0
+  local old_ip old_domain current_dns other_role other_ip backup tmp ans rc
+  local was_active=0 dns_changed=0
   old_ip="$(jq -r ".services.${service}.${role}_iran_ip" "$CFG")"
   old_domain="$(jq -r ".services.${service}.${role}_domain // empty" "$CFG")"
   current_dns="$(cf_current_ip "$service")"
+  [[ -n "$current_dns" ]] || die "Could not read current Cloudflare DNS IP."
   other_role=spare; [[ "$role" == spare ]] && other_role=main
   other_ip="$(jq -r ".services.${service}.${other_role}_iran_ip" "$CFG")"
 
@@ -141,8 +143,20 @@ set_mapping(){
   chmod 0600 "$backup"
   echo "Backup: $backup"
 
+  restore_previous(){
+    yellow "Restoring previous mapping..."
+    tar -xzf "$backup" -C /
+    if [[ $dns_changed -eq 1 ]]; then
+      cf_switch_ip "$service" "$current_dns"
+      yellow "Cloudflare DNS restored to $current_dns."
+    fi
+    systemctl daemon-reload
+    if [[ $was_active -eq 1 ]]; then
+      systemctl start "$SERVICE" 2>/dev/null || true
+    fi
+  }
+
   tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' RETURN
   if [[ -n "$frp_domain" ]]; then
     jq --arg s "$service" --arg r "$role" --arg ip "$ip" --arg d "$frp_domain" '
       .services[$s][($r + "_iran_ip")] = $ip |
@@ -160,26 +174,28 @@ set_mapping(){
   fi
 
   install -m 0600 "$tmp" "$CFG"
+  rm -f "$tmp"
   reset_state
 
-  # If production DNS still points at the old value of the role being replaced,
-  # the new config would classify it as UNKNOWN. Offer an immediate safe switch,
-  # but only after the new endpoint has already passed a full VLESS probe.
+  # If production DNS points to the old value of the role being replaced,
+  # the new config would classify it as UNKNOWN. Offer to move DNS only after
+  # the replacement IP has already passed a full VLESS+Reality probe.
   if [[ "$current_dns" == "$old_ip" && "$old_ip" != "$ip" ]]; then
     echo
     yellow "Production DNS currently points to the OLD ${role^^} IP ($old_ip)."
     read -r -p "Switch ${service}.biya2film.top to the new IP $ip now? [y/N]: " ans
     if [[ "$ans" =~ ^[Yy]$ ]]; then
       cf_switch_ip "$service" "$ip"
+      dns_changed=1
       green "Cloudflare DNS switched to $ip."
     else
-      yellow "DNS was NOT changed. The controller will remain stopped to avoid UNKNOWN-state automation."
-      echo "Restore the old mapping or update DNS, then run: systemctl start $SERVICE"
+      yellow "DNS was not changed. No production change will be kept."
+      restore_previous
       exit 3
     fi
   elif [[ "$current_dns" != "$other_ip" && "$current_dns" != "$ip" ]]; then
     yellow "Current production DNS ($current_dns) is neither the new ${role^^} IP nor the unchanged ${other_role^^} IP."
-    yellow "Controller remains stopped for safety."
+    restore_previous
     exit 4
   fi
 
@@ -191,20 +207,20 @@ set_mapping(){
   rc=$?
   set -e
   if [[ $rc -ne 0 ]]; then
-    red "Diagnostics failed. Rolling back mapping and DNS only if this script changed DNS."
-    tar -xzf "$backup" -C /
-    # Avoid silently changing Cloudflare back; leave service stopped for operator review.
-    echo "Config restored from $backup. Verify Cloudflare DNS before starting the controller."
+    red "Diagnostics failed. No mapping/DNS change will be kept."
+    restore_previous
     exit "$rc"
   fi
 
   systemctl daemon-reload
   systemctl enable --now "$SERVICE" >/dev/null
   sleep 2
-  systemctl is-active --quiet "$SERVICE" || {
-    journalctl -u "$SERVICE" -n 80 --no-pager
-    die "Controller did not start."
-  }
+  if ! systemctl is-active --quiet "$SERVICE"; then
+    journalctl -u "$SERVICE" -n 80 --no-pager || true
+    red "Controller did not start. Rolling back."
+    restore_previous
+    exit 5
+  fi
 
   green "Mapping updated successfully."
   show_mapping
