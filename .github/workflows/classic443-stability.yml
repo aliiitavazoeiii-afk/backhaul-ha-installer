@@ -24,23 +24,57 @@ jobs:
           bash -n frp-classic443-hardened/upgrade-stability-v3.sh
           bash -n frp-classic443-hardened/upgrade-mux-v4.sh
           bash -n frp-classic443-hardened/uninstall.sh
-      - name: Mux-v4 invariants
+      - name: Final mux-v4 invariants
         run: |
           set -euo pipefail
-          M=frp-classic443-hardened/upgrade-mux-v4.sh
-          F=frp-classic443-hardened/install-mux-v4.sh
+          I=frp-classic443-hardened/install.sh
+          W=frp-classic443-hardened/install-mux-v4.sh
+          U=frp-classic443-hardened/uninstall.sh
 
-          grep -q 'transport.tcpMux = true' "$M"
-          grep -q 'transport.maxPoolCount = 256' "$M"
-          grep -q 'transport.poolCount = 128' "$M"
-          grep -q 'transport.tcpMuxKeepaliveInterval = 30' "$M"
-          grep -q 'MemorySwapMax=0' "$M"
-          grep -q 'MemoryMax=768M' "$M"
-          grep -q 'GOMEMLIMIT=512MiB' "$M"
-          grep -q 'upgrade-mux-v4.sh' "$F"
+          grep -q 'PROFILE_VERSION="classic443-mux-v4-final"' "$I"
+          grep -q 'POOL_COUNT=128' "$I"
+          grep -q 'MAX_POOL_COUNT=256' "$I"
+          grep -q 'transport.tcpMux = true' "$I"
+          grep -q 'transport.tcpMuxKeepaliveInterval = 30' "$I"
+          grep -q 'userConnTimeout = 30' "$I"
+          grep -q 'transport.dialServerTimeout = 12' "$I"
+          grep -q 'transport.heartbeatInterval = 30' "$I"
+          grep -q 'transport.heartbeatTimeout = 90' "$I"
+          grep -q 'transport.tls.trustedCaFile' "$I"
+          grep -q 'worker_connections 65535' "$I"
+          grep -q 'worker_rlimit_nofile 262144' "$I"
+          grep -q 'proxy_read_timeout 7d' "$I"
+          grep -q 'proxy_send_timeout 7d' "$I"
+          grep -q 'proxy_socket_keepalive on' "$I"
+          grep -q 'tcp-request inspect-delay 10s' "$I"
+          grep -q 'timeout client  24h' "$I"
+          grep -q 'timeout server  24h' "$I"
+          grep -q 'server frp_user 127.0.0.1:$PROXY_PORT' "$I"
+          grep -q 'MemoryHigh=512M' "$I"
+          grep -q 'MemoryMax=768M' "$I"
+          grep -q 'MemorySwapMax=0' "$I"
+          grep -q 'GOMEMLIMIT=512MiB' "$I"
+          grep -q 'GOGC=100' "$I"
+          grep -q 'FINAL_INSTALL_COMMIT="a6c8d7ffa375d13f6acea7eaa4c5588143f3121d"' "$W"
+          grep -q 'rm -rf "$FRPC_DROPIN_DIR" "$FRPS_DROPIN_DIR"' "$U"
 
-          # Production profile must remain single client / no shards.
-          if grep -Eiq 'enable[-_ ]?4[-_ ]?shard|shard@|16-shard' "$M" "$F"; then
-            echo 'shard logic found in mux-v4 production profile' >&2
+          # Final production installer must not reintroduce the retired no-mux
+          # transport or shard fan-out.
+          if grep -q 'transport.tcpMux = false' "$I"; then
+            echo 'retired tcpMux=false found in final installer' >&2
+            exit 1
+          fi
+          if grep -Eiq 'enable[-_ ]?4[-_ ]?shard|shard@|16-shard' "$I" "$W"; then
+            echo 'shard logic found in final production profile' >&2
+            exit 1
+          fi
+
+          # User-plane backend must never actively health-check 10445.
+          if grep -Eq 'server frp_user .*check' "$I"; then
+            echo 'active HAProxy health-check found on FRP user backend' >&2
+            exit 1
+          fi
+          if grep -q '^healthCheck.type' "$I"; then
+            echo 'proxy-level FRP health polling found in final installer' >&2
             exit 1
           fi
