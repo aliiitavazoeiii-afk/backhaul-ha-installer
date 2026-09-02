@@ -20,27 +20,27 @@ jobs:
       - name: Shell syntax
         run: |
           bash -n frp-classic443-hardened/install.sh
+          bash -n frp-classic443-hardened/install-mux-v4.sh
           bash -n frp-classic443-hardened/upgrade-stability-v3.sh
+          bash -n frp-classic443-hardened/upgrade-mux-v4.sh
           bash -n frp-classic443-hardened/uninstall.sh
-      - name: Stability invariants
+      - name: Mux-v4 invariants
         run: |
           set -euo pipefail
-          I=frp-classic443-hardened/install.sh
-          U=frp-classic443-hardened/upgrade-stability-v3.sh
+          M=frp-classic443-hardened/upgrade-mux-v4.sh
+          F=frp-classic443-hardened/install-mux-v4.sh
 
-          grep -q "POOL_COUNT=8" "$I"
-          grep -q "tcp-request inspect-delay 10s" "$I"
-          grep -q "timeout client  24h" "$I"
-          grep -q "timeout server  24h" "$I"
-          grep -q "server frp_user 127.0.0.1:\$PROXY_PORT'''" "$I"
-          grep -q "MemorySwapMax=0" "$I"
-          grep -q "GOMEMLIMIT=192MiB" "$I"
-          grep -q "MemoryMax=384M" "$I"
-          grep -q "transport.poolCount = 8" "$U"
-          grep -q "MemorySwapMax=0" "$U"
+          grep -q 'transport.tcpMux = true' "$M"
+          grep -q 'transport.maxPoolCount = 256' "$M"
+          grep -q 'transport.poolCount = 128' "$M"
+          grep -q 'transport.tcpMuxKeepaliveInterval = 30' "$M"
+          grep -q 'MemorySwapMax=0' "$M"
+          grep -q 'MemoryMax=768M' "$M"
+          grep -q 'GOMEMLIMIT=512MiB' "$M"
+          grep -q 'upgrade-mux-v4.sh' "$F"
 
-          # Production profile must stay single-client/no-shard.
-          if grep -Eiq 'enable[-_ ]?4[-_ ]?shard|shard@|16-shard' "$I"; then
-            echo 'shard logic found in production installer' >&2
+          # Production profile must remain single client / no shards.
+          if grep -Eiq 'enable[-_ ]?4[-_ ]?shard|shard@|16-shard' "$M" "$F"; then
+            echo 'shard logic found in mux-v4 production profile' >&2
             exit 1
           fi
