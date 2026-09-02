@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP="maya-failover"
+ETC="/etc/${APP}"
+STATE="/var/lib/${APP}"
+SERVICE="${APP}.service"
+CFG="${ETC}/config.json"
+SECRETS="${ETC}/secrets.env"
+VLESS="${ETC}/vless.env"
+CTRL="/opt/${APP}/controller.py"
+STATE_JSON="${STATE}/state.json"
+
+red(){ printf '\033[31m%s\033[0m\n' "$*"; }
+green(){ printf '\033[32m%s\033[0m\n' "$*"; }
+yellow(){ printf '\033[33m%s\033[0m\n' "$*"; }
+cyan(){ printf '\033[36m%s\033[0m\n' "$*"; }
+die(){ red "ERROR: $*" >&2; exit 1; }
+
+need_root(){ [[ ${EUID:-$(id -u)} -eq 0 ]] || die "Run as root."; }
+valid_ipv4(){ local IFS=. a b c d e; read -r a b c d e <<<"$1"; [[ -z ${e:-} && $a =~ ^[0-9]+$ && $b =~ ^[0-9]+$ && $c =~ ^[0-9]+$ && $d =~ ^[0-9]+$ ]] || return 1; ((10#$a<=255 && 10#$b<=255 && 10#$c<=255 && 10#$d<=255)); }
+valid_domain(){ [[ -z "$1" || ( ${#1} -le 253 && "$1" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$ ) ]]; }
+
+load_secret(){
+  local key="$1"
+  awk -F= -v k="$key" '$1==k {sub(/^[^=]*=/,""); print; exit}' "$SECRETS"
+}
+
+require_files(){
+  [[ -r "$CFG" ]] || die "Missing $CFG"
+  [[ -r "$SECRETS" ]] || die "Missing $SECRETS"
+  [[ -r "$VLESS" ]] || die "Missing $VLESS"
+  [[ -x "$CTRL" ]] || die "Missing $CTRL"
+  command -v jq >/dev/null 2>&1 || { apt-get update -y >/dev/null && apt-get install -y jq >/dev/null; }
+  command -v curl >/dev/null 2>&1 || { apt-get update -y >/dev/null && apt-get install -y curl >/dev/null; }
+}
+
+show_mapping(){
+  echo
+  cyan "Current Maya mappings"
+  jq -r '
+    .services | to_entries[] |
+    .key as $name | .value as $s |
+    "\($name|ascii_upcase)\n  MAIN  IP=\($s.main_iran_ip) FRP=\($s.main_domain // \"-\")\n  SPARE IP=\($s.spare_iran_ip) FRP=\($s.spare_domain // \"-\")"
+  ' "$CFG"
+  echo
+  if [[ -r "$STATE_JSON" ]]; then
+    cyan "Last observed active state"
+    jq -r '.services // {} | to_entries[] | "\(.key|ascii_upcase): mode=\(.value.mode // \"unknown\") dns=\(.value.last_dns_ip // \"unknown\")"' "$STATE_JSON" 2>/dev/null || true
+  fi
+}
+
+probe_ip(){
+  local service="$1" ip="$2"
+  python3 - "$service" "$ip" "$CTRL" "$VLESS" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+service, ip, ctrl_path, vless_path = sys.argv[1:]
+spec = importlib.util.spec_from_file_location("maya_controller", ctrl_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+env = mod.load_env(Path(vless_path))
+key = "MAYA1_VLESS" if service == "maya1" else "MAYA3_VLESS"
+creds = mod.parse_vless(env[key])
+ok, detail = mod.vless_probe(creds, ip)
+print(("OK" if ok else "FAIL") + " — " + detail)
+raise SystemExit(0 if ok else 1)
+PY
+}
+
+cf_current_ip(){
+  local service="$1" zone_id record_id token
+  zone_id="$(jq -r '.cloudflare.zone_id' "$CFG")"
+  record_id="$(jq -r ".services.${service}.record_id" "$CFG")"
+  token="$(load_secret CLOUDFLARE_API_TOKEN)"
+  curl -fsS -H "Authorization: Bearer ${token}" \
+    "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}" |
+    jq -r '.result.content // empty'
+}
+
+cf_switch_ip(){
+  local service="$1" ip="$2" zone_id record_id token ttl result
+  zone_id="$(jq -r '.cloudflare.zone_id' "$CFG")"
+  record_id="$(jq -r ".services.${service}.record_id" "$CFG")"
+  ttl="$(jq -r '.cloudflare.ttl // 60' "$CFG")"
+  token="$(load_secret CLOUDFLARE_API_TOKEN)"
+  result="$(curl -fsS -X PATCH \
+    -H "Authorization: Bearer ${token}" \
+    -H 'Content-Type: application/json' \
+    --data "{\"content\":\"${ip}\",\"ttl\":${ttl},\"proxied\":false}" \
+    "https://api.cloudflare.com/client/v4/zones/${zone_id}/dns_records/${record_id}")"
+  [[ "$(jq -r '.success // false' <<<"$result")" == "true" ]] || die "Cloudflare DNS update failed."
+}
+
+reset_state(){
+  local offset=0
+  if [[ -r "$STATE_JSON" ]]; then
+    offset="$(jq -r '.telegram_offset // 0' "$STATE_JSON" 2>/dev/null || echo 0)"
+  fi
+  cat >"$STATE_JSON" <<EOF
+{
+  "services": {},
+  "telegram_offset": ${offset}
+}
+EOF
+  chmod 0600 "$STATE_JSON"
+}
+
+set_mapping(){
+  local service="$1" role="$2" ip="$3" frp_domain="${4:-}"
+  [[ "$service" == maya1 || "$service" == maya3 ]] || die "Service must be maya1 or maya3."
+  [[ "$role" == main || "$role" == spare ]] || die "Role must be main or spare."
+  valid_ipv4 "$ip" || die "Invalid IPv4: $ip"
+  valid_domain "$frp_domain" || die "Invalid FRP domain: $frp_domain"
+
+  local old_ip old_domain current_dns other_role other_ip backup tmp was_active=0
+  old_ip="$(jq -r ".services.${service}.${role}_iran_ip" "$CFG")"
+  old_domain="$(jq -r ".services.${service}.${role}_domain // empty" "$CFG")"
+  current_dns="$(cf_current_ip "$service")"
+  other_role=spare; [[ "$role" == spare ]] && other_role=main
+  other_ip="$(jq -r ".services.${service}.${other_role}_iran_ip" "$CFG")"
+
+  echo
+  echo "${service^^} ${role^^}:"
+  echo "  old IP : $old_ip"
+  echo "  new IP : $ip"
+  echo "  old FRP: ${old_domain:--}"
+  echo "  new FRP: ${frp_domain:--}"
+  echo "  DNS now: $current_dns"
+
+  cyan "Testing new server through the real VLESS+Reality path..."
+  if ! probe_ip "$service" "$ip"; then
+    die "New server failed the end-to-end VLESS test. Mapping was NOT changed."
+  fi
+  green "New server passed VLESS end-to-end probe."
+
+  mkdir -p "$STATE/backups"
+  chmod 0700 "$STATE" "$STATE/backups"
+  backup="$STATE/backups/pre-maya-map-$(date +%Y%m%d-%H%M%S).tar.gz"
+  tar -czf "$backup" "$CFG" "$STATE_JSON" 2>/dev/null || tar -czf "$backup" "$CFG"
+  chmod 0600 "$backup"
+  echo "Backup: $backup"
+
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp"' RETURN
+  if [[ -n "$frp_domain" ]]; then
+    jq --arg s "$service" --arg r "$role" --arg ip "$ip" --arg d "$frp_domain" '
+      .services[$s][($r + "_iran_ip")] = $ip |
+      .services[$s][($r + "_domain")] = $d
+    ' "$CFG" >"$tmp"
+  else
+    jq --arg s "$service" --arg r "$role" --arg ip "$ip" '
+      .services[$s][($r + "_iran_ip")] = $ip
+    ' "$CFG" >"$tmp"
+  fi
+
+  if systemctl is-active --quiet "$SERVICE"; then
+    was_active=1
+    systemctl stop "$SERVICE"
+  fi
+
+  install -m 0600 "$tmp" "$CFG"
+  reset_state
+
+  # If production DNS still points at the old value of the role being replaced,
+  # the new config would classify it as UNKNOWN. Offer an immediate safe switch,
+  # but only after the new endpoint has already passed a full VLESS probe.
+  if [[ "$current_dns" == "$old_ip" && "$old_ip" != "$ip" ]]; then
+    echo
+    yellow "Production DNS currently points to the OLD ${role^^} IP ($old_ip)."
+    read -r -p "Switch ${service}.biya2film.top to the new IP $ip now? [y/N]: " ans
+    if [[ "$ans" =~ ^[Yy]$ ]]; then
+      cf_switch_ip "$service" "$ip"
+      green "Cloudflare DNS switched to $ip."
+    else
+      yellow "DNS was NOT changed. The controller will remain stopped to avoid UNKNOWN-state automation."
+      echo "Restore the old mapping or update DNS, then run: systemctl start $SERVICE"
+      exit 3
+    fi
+  elif [[ "$current_dns" != "$other_ip" && "$current_dns" != "$ip" ]]; then
+    yellow "Current production DNS ($current_dns) is neither the new ${role^^} IP nor the unchanged ${other_role^^} IP."
+    yellow "Controller remains stopped for safety."
+    exit 4
+  fi
+
+  reset_state
+  echo
+  cyan "Running full controller diagnostics..."
+  set +e
+  "$CTRL" --diagnose
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    red "Diagnostics failed. Rolling back mapping and DNS only if this script changed DNS."
+    tar -xzf "$backup" -C /
+    # Avoid silently changing Cloudflare back; leave service stopped for operator review.
+    echo "Config restored from $backup. Verify Cloudflare DNS before starting the controller."
+    exit "$rc"
+  fi
+
+  systemctl daemon-reload
+  systemctl enable --now "$SERVICE" >/dev/null
+  sleep 2
+  systemctl is-active --quiet "$SERVICE" || {
+    journalctl -u "$SERVICE" -n 80 --no-pager
+    die "Controller did not start."
+  }
+
+  green "Mapping updated successfully."
+  show_mapping
+}
+
+interactive(){
+  show_mapping
+  echo "1) Change MAYA1 MAIN"
+  echo "2) Change MAYA1 SPARE"
+  echo "3) Change MAYA3 MAIN"
+  echo "4) Change MAYA3 SPARE"
+  echo "5) Show only"
+  read -r -p "Choose [1-5]: " choice
+  case "$choice" in
+    1) service=maya1; role=main ;;
+    2) service=maya1; role=spare ;;
+    3) service=maya3; role=main ;;
+    4) service=maya3; role=spare ;;
+    5) exit 0 ;;
+    *) die "Invalid choice." ;;
+  esac
+  read -r -p "New Iran IP for ${service^^} ${role^^}: " ip
+  read -r -p "FRP control domain (optional, Enter to keep current): " domain
+  if [[ -z "$domain" ]]; then
+    domain="$(jq -r ".services.${service}.${role}_domain // empty" "$CFG")"
+  fi
+  set_mapping "$service" "$role" "$ip" "$domain"
+}
+
+need_root
+require_files
+case "${1:-menu}" in
+  menu) interactive ;;
+  show) show_mapping ;;
+  set)
+    [[ $# -ge 4 ]] || die "Usage: maya-map set {maya1|maya3} {main|spare} IP [frp-domain]"
+    set_mapping "$2" "$3" "$4" "${5:-}"
+    ;;
+  *)
+    echo "Usage:"
+    echo "  maya-map"
+    echo "  maya-map show"
+    echo "  maya-map set maya1 main 1.2.3.4 [frp-domain]"
+    echo "  maya-map set maya1 spare 1.2.3.4 [frp-domain]"
+    echo "  maya-map set maya3 main 1.2.3.4 [frp-domain]"
+    echo "  maya-map set maya3 spare 1.2.3.4 [frp-domain]"
+    exit 2
+    ;;
+esac
