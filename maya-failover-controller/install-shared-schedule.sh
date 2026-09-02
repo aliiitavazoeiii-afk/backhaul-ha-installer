@@ -9,8 +9,6 @@ CFG=$ETC/config.json
 SECRETS=$ETC/secrets.env
 VLESS=$ETC/vless.env
 SCHEDULE_CFG=$ETC/shared-schedule.json
-SCHEDULE_STATE=$STATE/shared-schedule-state
-SERVICE=$APP.service
 
 [[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "Run as root." >&2; exit 1; }
 [[ -r "$CFG" && -r "$SECRETS" && -r "$VLESS" && -x "$CTRL" ]] || {
@@ -35,9 +33,11 @@ cat >"$SCHEDULE_CFG" <<EOF
   "shared_iran_ip": "5.10.249.206",
   "maya1_baseline_main": "${MAYA1_BASE}",
   "maya3_baseline_main": "${MAYA3_BASE}",
-  "maya3_shared_start": 12,
-  "maya1_shared_start": 18,
-  "baseline_start": 0
+  "maya3_shared_start": "12:00",
+  "maya3_drain_start": "17:30",
+  "maya1_shared_start": "18:00",
+  "baseline_start": "00:00",
+  "drain_minutes": 30
 }
 EOF
 chmod 0600 "$SCHEDULE_CFG"
@@ -133,11 +133,18 @@ restore_target(){
 }
 
 phase_now(){
-  local hour
-  hour="$(TZ=Asia/Tehran date +%H)"; hour=$((10#$hour))
-  if (( hour >= 12 && hour < 18 )); then echo maya3_shared
-  elif (( hour >= 18 && hour < 24 )); then echo maya1_shared
-  else echo baseline
+  local h m minute
+  h="$(TZ=Asia/Tehran date +%H)"
+  m="$(TZ=Asia/Tehran date +%M)"
+  minute=$((10#$h * 60 + 10#$m))
+  if (( minute >= 720 && minute < 1050 )); then
+    echo maya3_shared
+  elif (( minute >= 1050 && minute < 1080 )); then
+    echo maya3_drain
+  elif (( minute >= 1080 )); then
+    echo maya1_shared
+  else
+    echo baseline
   fi
 }
 
@@ -155,6 +162,15 @@ apply_phase(){
       probe maya3 "$shared" || { notify "⛔ MAYA3 scheduled Shared Hub switch blocked: VLESS probe failed on $shared"; return 1; }
       target1="$(restore_target maya1 "$m1base")" || { notify "⛔ MAYA1 has no healthy original path; scheduled transition aborted."; return 1; }
       target3="$shared"
+      ;;
+    maya3_drain)
+      # DNS moves away 30 minutes before the 18:00 slot handoff, while the
+      # Iran Shared Hub itself keeps serving MAYA3 until 18:00. Existing TCP
+      # sessions are untouched and clients with a stale DNS cache can still
+      # reconnect to the old shared IP during the drain window.
+      target1="$(restore_target maya1 "$m1base")" || { notify "⛔ MAYA1 has no healthy original path; MAYA3 drain aborted."; return 1; }
+      target3="$(restore_target maya3 "$m3base")" || { notify "⛔ MAYA3 has no healthy original path; drain aborted."; return 1; }
+      log "MAYA3 drain: DNS -> $target3 while Shared Hub remains on MAYA3 until 18:00"
       ;;
     maya1_shared)
       log "Preflight MAYA1 shared path $shared"
@@ -183,7 +199,8 @@ apply_phase(){
     [[ $was_active -eq 1 ]] && systemctl start "$SERVICE" 2>/dev/null || true
   }
 
-  # Restore canonical main mappings first; only the scheduled service becomes shared main.
+  # Restore canonical main mappings first; only an actively shared service
+  # gets the shared IP as its main mapping. Drain uses the original main.
   set_main_mapping maya1 "$m1base"
   set_main_mapping maya3 "$m3base"
   [[ "$phase" == maya1_shared ]] && set_main_mapping maya1 "$shared"
@@ -219,7 +236,7 @@ case "${1:-reconcile}" in
     apply_phase "$desired"
     ;;
   force)
-    [[ ${2:-} =~ ^(baseline|maya1_shared|maya3_shared)$ ]] || { echo "force requires baseline|maya1_shared|maya3_shared" >&2; exit 2; }
+    [[ ${2:-} =~ ^(baseline|maya1_shared|maya3_shared|maya3_drain)$ ]] || { echo "force requires baseline|maya1_shared|maya3_shared|maya3_drain" >&2; exit 2; }
     apply_phase "$2"
     ;;
   status) status ;;
@@ -241,7 +258,7 @@ EOF
 
 cat >/etc/systemd/system/maya-shared-schedule.timer <<EOF
 [Unit]
-Description=Maya schedule: MAYA3 12-18, MAYA1 18-24 Tehran
+Description=Maya schedule with 17:30 MAYA3 drain before 18:00 handoff
 [Timer]
 OnBootSec=20s
 OnUnitActiveSec=60s
@@ -259,10 +276,12 @@ systemctl enable --now maya-shared-schedule.timer >/dev/null
 echo
 echo "Installed Maya Shared schedule (Asia/Tehran):"
 echo "  00:00-12:00  original healthy paths"
-echo "  12:00-18:00  MAYA3 -> 5.10.249.206"
+echo "  12:00-17:30  MAYA3 -> 5.10.249.206"
+echo "  17:30-18:00  MAYA3 DNS drains to original path; existing Shared sessions stay alive"
 echo "  18:00-24:00  MAYA1 -> 5.10.249.206"
 echo
 echo "Status: maya-shared-schedule status"
 echo "Manual: maya-shared-schedule force maya3_shared"
+echo "        maya-shared-schedule force maya3_drain"
 echo "        maya-shared-schedule force maya1_shared"
 echo "        maya-shared-schedule force baseline"
