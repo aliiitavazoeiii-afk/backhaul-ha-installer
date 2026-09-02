@@ -3,7 +3,7 @@ set -Eeuo pipefail
 
 APP="frp-tunnel-ali-pro"
 BRAND="FRP Tunnel — Ali Pro"
-VERSION="1.0.0"
+VERSION="1.0.1"
 FRP_VERSION="0.71.0"
 FRP_AMD64_SHA256="84f27e39f11169f7adcef8e8b70c9329de17747b1f14dad9fb95eef5682ea716"
 FRP_ARM64_SHA256="f33c293c275d8fc68c654b6fba8f10b2551d6463d09a9fc9cffb7227eae82266"
@@ -14,6 +14,7 @@ STATE="/var/lib/${APP}"
 SERVICE="${APP}.service"
 NGINX_CONF="/etc/nginx/conf.d/${APP}.conf"
 NGINX_LIMIT_DROPIN="/etc/systemd/system/nginx.service.d/${APP}-limits.conf"
+ACME_ROOT="/var/www/frp-ali-acme"
 
 red(){ printf '\033[31m%s\033[0m\n' "$*"; }
 green(){ printf '\033[32m%s\033[0m\n' "$*"; }
@@ -36,10 +37,15 @@ banner(){
 EOF
 }
 
-install_deps(){
+install_common_deps(){
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y >/dev/null
-  apt-get install -y ca-certificates curl tar openssl jq iproute2 netcat-openbsd nginx certbot >/dev/null
+  apt-get install -y ca-certificates curl tar openssl jq iproute2 netcat-openbsd >/dev/null
+}
+
+install_iran_deps(){
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get install -y nginx certbot >/dev/null
 }
 
 download_frp(){
@@ -75,6 +81,23 @@ backup_existing(){
 
 port_busy(){ ss -H -ltn "sport = :$1" 2>/dev/null | grep -q .; }
 
+port_owned_by_our_service(){
+  local p="$1" pid owner
+  systemctl is-active --quiet "$SERVICE" || return 1
+  pid="$(systemctl show -p MainPID --value "$SERVICE" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 ]] || return 1
+  owner="$(ss -H -ltnp "sport = :$p" 2>/dev/null | head -n1 || true)"
+  [[ "$owner" == *"pid=$pid,"* ]]
+}
+
+require_port_free_or_ours(){
+  local p="$1" owner
+  port_busy "$p" || return 0
+  port_owned_by_our_service "$p" && return 0
+  owner="$(ss -H -ltnp "sport = :$p" 2>/dev/null | head -n1 || true)"
+  die "TCP port $p is already owned by another service: $owner"
+}
+
 resolve_contains(){
   local domain="$1" ip="$2"
   getent ahostsv4 "$domain" 2>/dev/null | awk '{print $1}' | sort -u | grep -Fxq "$ip"
@@ -103,6 +126,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target
@@ -131,6 +159,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target
@@ -141,7 +174,6 @@ cat >"/etc/systemd/system/${APP}-shard@.service" <<EOF
 Description=${BRAND} - Foreign FRPC shard %i
 After=network-online.target ${SERVICE}
 Wants=network-online.target
-PartOf=${SERVICE}
 StartLimitIntervalSec=0
 
 [Service]
@@ -158,6 +190,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
 ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target
@@ -165,20 +202,38 @@ EOF
 }
 
 nginx_capacity(){
-  mkdir -p "$(dirname "$NGINX_LIMIT_DROPIN")"
+  mkdir -p "$(dirname "$NGINX_LIMIT_DROPIN")" "$STATE/backups"
   cat >"$NGINX_LIMIT_DROPIN" <<EOF
 [Service]
 LimitNOFILE=262144
 EOF
 
-  cp -a /etc/nginx/nginx.conf "$STATE/backups/nginx.conf.$(date +%Y%m%d-%H%M%S)"
+  local bak="$STATE/backups/nginx.conf.$(date +%Y%m%d-%H%M%S)"
+  cp -a /etc/nginx/nginx.conf "$bak"
   if grep -Eq '^[[:space:]]*worker_connections[[:space:]]+[0-9]+' /etc/nginx/nginx.conf; then
     sed -ri 's/^[[:space:]]*worker_connections[[:space:]]+[0-9]+;/        worker_connections 65535;/' /etc/nginx/nginx.conf
   else
     sed -ri '/^[[:space:]]*events[[:space:]]*\{/a\        worker_connections 65535;' /etc/nginx/nginx.conf
   fi
   grep -Eq '^[[:space:]]*worker_rlimit_nofile' /etc/nginx/nginx.conf || sed -ri '/^[[:space:]]*worker_processes/a worker_rlimit_nofile 262144;' /etc/nginx/nginx.conf
+  if ! nginx -t >/dev/null 2>&1; then
+    cp -a "$bak" /etc/nginx/nginx.conf
+    nginx -t >/dev/null 2>&1 || die "nginx.conf was invalid before capacity tuning."
+    die "Nginx capacity tuning failed validation and was rolled back."
+  fi
   systemctl daemon-reload
+}
+
+write_acme_nginx(){
+  mkdir -p "$ACME_ROOT/.well-known/acme-challenge"
+  cat >"/etc/nginx/conf.d/${APP}-acme.conf" <<EOF
+server {
+    listen ${IRAN_IP}:80;
+    server_name ${DOMAIN};
+    location ^~ /.well-known/acme-challenge/ { root ${ACME_ROOT}; }
+    location / { return 404; }
+}
+EOF
 }
 
 ensure_certificate(){
@@ -189,25 +244,26 @@ ensure_certificate(){
     return 0
   fi
 
-  mkdir -p /var/www/frp-ali-acme/.well-known/acme-challenge
-  cat >"/etc/nginx/conf.d/${APP}-acme.conf" <<EOF
-server {
-    listen ${IRAN_IP}:80;
-    server_name ${DOMAIN};
-    location ^~ /.well-known/acme-challenge/ { root /var/www/frp-ali-acme; }
-    location / { return 404; }
-}
-EOF
+  write_acme_nginx
   nginx -t || die "Temporary ACME nginx config is invalid."
   systemctl enable --now nginx >/dev/null
   systemctl reload nginx
-  certbot certonly --webroot -w /var/www/frp-ali-acme -d "$DOMAIN" --agree-tos --non-interactive --register-unsafely-without-email || die "Let's Encrypt issuance failed. Make sure DNS points directly to this Iran IP and TCP/80 is reachable."
-  rm -f "/etc/nginx/conf.d/${APP}-acme.conf"
+  certbot certonly --webroot -w "$ACME_ROOT" -d "$DOMAIN" --agree-tos --non-interactive --register-unsafely-without-email || die "Let's Encrypt issuance failed. Make sure DNS points directly to this Iran IP and TCP/80 is reachable."
 }
 
 write_nginx(){
-cat >"$NGINX_CONF" <<EOF
+  rm -f "/etc/nginx/conf.d/${APP}-acme.conf"
+  mkdir -p "$ACME_ROOT/.well-known/acme-challenge"
+  cat >"$NGINX_CONF" <<EOF
 # ${BRAND}
+# Port 80 is retained only for ACME renewal. FRP control is WSS/TLS on ${CONTROL_PORT}.
+server {
+    listen ${IRAN_IP}:80;
+    server_name ${DOMAIN};
+    location ^~ /.well-known/acme-challenge/ { root ${ACME_ROOT}; }
+    location / { return 404; }
+}
+
 server {
     listen ${IRAN_IP}:${CONTROL_PORT} ssl;
     server_name ${DOMAIN};
@@ -218,10 +274,10 @@ server {
     ssl_session_cache shared:FRPALIPRO:20m;
     ssl_session_timeout 1d;
     server_tokens off;
-
     tcp_nodelay on;
 
     location = /~!frp {
+        if (\$http_upgrade !~* "websocket") { return 404; }
         proxy_pass http://127.0.0.1:18443;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
@@ -300,7 +356,7 @@ decode_pair(){
 
 write_frpc_shards(){
   local group_key shard port
-  group_key="$(openssl rand -hex 24)"
+  group_key="$(openssl rand -hex 32)"
   printf '%s\n' "$group_key" >"$ETC/lb-group-key"
   chmod 0600 "$ETC/lb-group-key"
 
@@ -347,7 +403,7 @@ localPort = ${LOCAL_PORT}
 remotePort = ${PUBLIC_PORT}
 transport.useEncryption = false
 transport.useCompression = false
-loadBalancer.group = "ali-${PROFILE}-lb"
+loadBalancer.group = "ali-vpn-${PROFILE}-lb"
 loadBalancer.groupKey = "${group_key}"
 healthCheck.type = "tcp"
 healthCheck.timeoutSeconds = 3
@@ -411,20 +467,15 @@ install_iran(){
   [[ "$CONTROL_PORT" != "$PUBLIC_PORT" ]] || die "Control and user ports must differ."
   resolve_contains "$DOMAIN" "$IRAN_IP" || die "DNS for $DOMAIN must resolve directly to $IRAN_IP before installation."
 
-  install_deps
+  install_common_deps
+  install_iran_deps
   mkdir -p "$ETC" "$OPT" "$STATE"
   chmod 0700 "$ETC" "$STATE"
   backup_existing
   download_frp
 
-  if port_busy 18443; then
-    local owner; owner="$(ss -H -ltnp 'sport = :18443' 2>/dev/null || true)"
-    [[ "$owner" == *frps* ]] || die "127.0.0.1:18443 is already in use: $owner"
-  fi
-  if port_busy "$PUBLIC_PORT"; then
-    local owner2; owner2="$(ss -H -ltnp "sport = :$PUBLIC_PORT" 2>/dev/null || true)"
-    [[ "$owner2" == *frps* ]] || die "Public port $PUBLIC_PORT is already in use: $owner2"
-  fi
+  require_port_free_or_ours 18443
+  require_port_free_or_ours "$PUBLIC_PORT"
 
   printf '%s\n' "$(openssl rand -hex 32)" >"$ETC/token"
   chmod 0600 "$ETC/token"
@@ -467,7 +518,7 @@ install_foreign(){
   prompt LOCAL_PORT "Existing local Xray/3x-ui inbound port" "443"
   valid_port "$LOCAL_PORT" || die "Invalid local port."
 
-  install_deps
+  install_common_deps
   mkdir -p "$ETC" "$OPT" "$STATE"
   chmod 0700 "$ETC" "$STATE"
   backup_existing
@@ -490,7 +541,7 @@ install_foreign(){
   systemctl daemon-reload
   systemctl enable "$SERVICE" "${APP}-shard@02.service" "${APP}-shard@03.service" "${APP}-shard@04.service" >/dev/null
   systemctl restart "$SERVICE"
-  sleep 3
+  sleep 2
   systemctl restart "${APP}-shard@02.service"; sleep 1
   systemctl restart "${APP}-shard@03.service"; sleep 1
   systemctl restart "${APP}-shard@04.service"
@@ -509,11 +560,11 @@ uninstall_project(){
   systemctl disable --now "$SERVICE" 2>/dev/null || true
   for n in 02 03 04; do systemctl disable --now "${APP}-shard@${n}.service" 2>/dev/null || true; done
   rm -f "/etc/systemd/system/${SERVICE}" "/etc/systemd/system/${APP}-shard@.service"
-  rm -f "$NGINX_CONF" "$NGINX_LIMIT_DROPIN" /usr/local/bin/frp-ali-health
+  rm -f "$NGINX_CONF" "/etc/nginx/conf.d/${APP}-acme.conf" "$NGINX_LIMIT_DROPIN" /usr/local/bin/frp-ali-health
   systemctl daemon-reload
-  nginx -t >/dev/null 2>&1 && systemctl reload nginx || true
+  if command -v nginx >/dev/null 2>&1; then nginx -t >/dev/null 2>&1 && systemctl reload nginx || true; fi
   rm -rf "$ETC" "$OPT"
-  green "Removed Ali Pro project components. Xray/3x-ui and certificates were preserved."
+  green "Removed Ali Pro project components. Xray/3x-ui and Let's Encrypt certificates were preserved."
 }
 
 need_root
