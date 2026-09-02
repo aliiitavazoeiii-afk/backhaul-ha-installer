@@ -1,0 +1,31 @@
+name: FRP Tunnel Ali Pro CI
+
+on:
+  push:
+    branches:
+      - agent/frp-tunnel-ali-pro-v1
+    paths:
+      - 'frp-tunnel-ali-pro/**'
+      - '.github/workflows/frp-tunnel-ali-pro-ci.yml'
+  pull_request:
+    paths:
+      - 'frp-tunnel-ali-pro/**'
+      - '.github/workflows/frp-tunnel-ali-pro-ci.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: |
+          bash -n frp-tunnel-ali-pro/install.sh
+          bash -n frp-tunnel-ali-pro/diagnostics.sh
+      - name: Static safety checks
+        run: |
+          grep -q 'transport.tcpMux = false' frp-tunnel-ali-pro/install.sh
+          grep -q 'transport.protocol = "wss"' frp-tunnel-ali-pro/install.sh
+          grep -q 'proxy_pass http://127.0.0.1:18443' frp-tunnel-ali-pro/install.sh
+          grep -q 'worker_connections 65535' frp-tunnel-ali-pro/install.sh
+          grep -q 'Xray/3x-ui was not touched' frp-tunnel-ali-pro/install.sh
+          ! grep -R --exclude='*.md' -E '(auth\.token[[:space:]]*=[[:space:]]*"[0-9a-f]{32,}"|Reality.*private|privateKey[[:space:]]*=)' frp-tunnel-ali-pro
