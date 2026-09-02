@@ -1,0 +1,6 @@
+*.log
+*.bak
+*.tmp
+pair-code.txt
+token
+lb-group-key
