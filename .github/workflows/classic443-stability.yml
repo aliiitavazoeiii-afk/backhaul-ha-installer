@@ -1,0 +1,46 @@
+name: Classic443 stability
+
+on:
+  push:
+    branches:
+      - agent/frp-classic443-hardened-v1
+    paths:
+      - 'frp-classic443-hardened/**'
+      - '.github/workflows/classic443-stability.yml'
+  pull_request:
+    paths:
+      - 'frp-classic443-hardened/**'
+      - '.github/workflows/classic443-stability.yml'
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          bash -n frp-classic443-hardened/install.sh
+          bash -n frp-classic443-hardened/upgrade-stability-v3.sh
+          bash -n frp-classic443-hardened/uninstall.sh
+      - name: Stability invariants
+        run: |
+          set -euo pipefail
+          I=frp-classic443-hardened/install.sh
+          U=frp-classic443-hardened/upgrade-stability-v3.sh
+
+          grep -q "POOL_COUNT=8" "$I"
+          grep -q "tcp-request inspect-delay 10s" "$I"
+          grep -q "timeout client  24h" "$I"
+          grep -q "timeout server  24h" "$I"
+          grep -q "server frp_user 127.0.0.1:\$PROXY_PORT'''" "$I"
+          grep -q "MemorySwapMax=0" "$I"
+          grep -q "GOMEMLIMIT=192MiB" "$I"
+          grep -q "MemoryMax=384M" "$I"
+          grep -q "transport.poolCount = 8" "$U"
+          grep -q "MemorySwapMax=0" "$U"
+
+          # Production profile must stay single-client/no-shard.
+          if grep -Eiq 'enable[-_ ]?4[-_ ]?shard|shard@|16-shard' "$I"; then
+            echo 'shard logic found in production installer' >&2
+            exit 1
+          fi
