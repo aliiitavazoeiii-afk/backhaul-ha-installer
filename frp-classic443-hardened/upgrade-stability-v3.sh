@@ -42,16 +42,13 @@ if [[ "$ROLE" == iran ]]; then
 from pathlib import Path
 import re,sys
 p=Path(sys.argv[1]); s=p.read_text()
-# Long-lived user sessions and robust carrier SNI inspection.
 s=re.sub(r'(?m)^\s*timeout client\s+\S+\s*$', '    timeout client  24h', s)
 s=re.sub(r'(?m)^\s*timeout server\s+\S+\s*$', '    timeout server  24h', s)
 s=re.sub(r'(?m)^\s*tcp-request inspect-delay\s+\S+\s*$', '    tcp-request inspect-delay 10s', s)
 if not re.search(r'(?m)^\s*option tcpka\s*$', s):
     s=s.replace('    option tcplog\n', '    option tcplog\n    option tcpka\n', 1)
-# Local carrier health check is safe but does not need 2-second churn.
 s=re.sub(r'(?m)^\s*server local_nginx 127\.0\.0\.1:9443.*$',
          '    server local_nginx 127.0.0.1:9443 check inter 5s fall 2 rise 2', s)
-# Critical: never actively health-check the FRP user proxy with tcpMux=false.
 s=re.sub(r'(?m)^\s*server frp_user 127\.0\.0\.1:10445.*$',
          '    server frp_user 127.0.0.1:10445', s)
 s=re.sub(r'(?m)^\s*option redispatch\s*\n', '', s)
@@ -72,6 +69,8 @@ if 'proxy_connect_timeout 5s;' not in s:
 p.write_text(s)
 PY
 
+  # Persist a more tolerant value for the next natural FRPS restart. No restart
+  # is forced by this upgrade because user continuity is more important here.
   sed -E -i 's/^userConnTimeout[[:space:]]*=.*/userConnTimeout = 20/' "$F"
 
   if ! haproxy -c -f "$H" >/dev/null 2>&1; then
@@ -105,28 +104,21 @@ LimitNOFILE=262144
 EOF2
   cat >/etc/systemd/system/frps-nomux.service.d/20-frp-stability.conf <<'EOF2'
 [Service]
-# Remove the old generic 512M cap from early Classic443 builds. The central
-# server must not be killed merely because aggregate user traffic grows.
 MemoryMax=infinity
 RestartSec=5s
 TimeoutStopSec=10s
 EOF2
   systemctl daemon-reload
 
-  # Graceful HAProxy/Nginx reload preserves current user sessions. frps needs one
-  # controlled restart to apply userConnTimeout and the old memory-cap override.
+  # Apply the old 512M MemoryMax removal live without restarting FRPS.
+  systemctl set-property --runtime frps-nomux.service MemoryMax=infinity >/dev/null 2>&1 || true
+
+  # Both are graceful reloads; established HAProxy/Nginx sessions are preserved.
   systemctl reload nginx
   systemctl reload haproxy
-  echo '[i] Applying FRPS policy: one controlled FRP restart now.'
-  systemctl restart frps-nomux
-  sleep 3
-  systemctl is-active --quiet frps-nomux || {
-    tail -n 100 /var/log/frp-nomux/frps.log 2>/dev/null || true
-    echo '[x] frps-nomux failed after upgrade.' >&2
-    exit 1
-  }
 
-  echo '[+] IRAN stability-v3 applied.'
+  echo '[+] IRAN stability-v3 applied with no FRPS restart.'
+  echo '[i] userConnTimeout=20 is saved and will take effect on the next natural FRPS restart.'
   grep -nE 'timeout client|timeout server|option tcpka|inspect-delay|server local_nginx|server frp_user|retries' "$H" || true
   grep -nE 'proxy_(read|send|connect)_timeout|proxy_socket_keepalive' "$N" || true
   systemctl show frps-nomux -p ActiveState -p MemoryCurrent -p MemoryPeak -p MemoryMax -p NRestarts
@@ -144,7 +136,6 @@ else
     sed -i '/^transport\.tls\.serverName/a transport.tls.trustedCaFile = "/etc/ssl/certs/ca-certificates.crt"' "$F"
   fi
 
-  # Never leave an FRP proxy health-check block in this profile.
   sed -i '/^healthCheck\.type = "tcp"$/,/^healthCheck\.intervalSeconds = /d' "$F"
 
   if ! /opt/frp-nomux/bin/frpc verify -c "$F" >/dev/null 2>&1; then
@@ -170,7 +161,7 @@ Environment=GOGC=75
 EOF2
   systemctl daemon-reload
 
-  echo '[i] Applying FRPC policy: one controlled FRP restart now.'
+  echo '[i] Applying FOREIGN stability policy: one controlled FRPC restart now.'
   systemctl restart frpc-nomux
   sleep 4
   systemctl is-active --quiet frpc-nomux || {
