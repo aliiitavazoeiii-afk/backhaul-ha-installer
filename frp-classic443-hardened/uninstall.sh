@@ -9,6 +9,8 @@ NGINX_FRP_CONF=/etc/nginx/conf.d/frp-nomux.conf
 NGINX_HOOK=/etc/letsencrypt/renewal-hooks/deploy/frp-nomux-nginx
 NGINX_DROPIN=/etc/systemd/system/nginx.service.d/frp-classic443.conf
 HAPROXY_DROPIN=/etc/systemd/system/haproxy.service.d/frp-classic443.conf
+FRPC_DROPIN_DIR=/etc/systemd/system/frpc-nomux.service.d
+FRPS_DROPIN_DIR=/etc/systemd/system/frps-nomux.service.d
 SWAPFILE=/swapfile-frp-resilience
 SYSCTL_FILE=/etc/sysctl.d/99-frp-resilience.conf
 
@@ -23,6 +25,7 @@ echo '[+] Stopping FRP Classic443 services...'
 systemctl disable --now frpc-nomux.service 2>/dev/null || true
 systemctl disable --now frps-nomux.service 2>/dev/null || true
 rm -f /etc/systemd/system/frpc-nomux.service /etc/systemd/system/frps-nomux.service
+rm -rf "$FRPC_DROPIN_DIR" "$FRPS_DROPIN_DIR"
 systemctl daemon-reload
 systemctl reset-failed frpc-nomux.service frps-nomux.service 2>/dev/null || true
 
