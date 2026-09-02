@@ -40,7 +40,7 @@ stop_matching_units(){
     while read -r unit; do
       [[ -n "$unit" ]] || continue
       systemctl disable --now "$unit" >/dev/null 2>&1 || true
-    done < <(systemctl list-unit-files --type=service --type=timer --no-legend 2>/dev/null | awk '{print $1}' | grep -E "^${pat//\*/.*}$" || true)
+    done < <(systemctl list-unit-files --no-legend 2>/dev/null | awk '{print $1}' | grep -E "^${pat//\*/.*}$" || true)
   done
 }
 
@@ -130,13 +130,15 @@ done
 say "Port ownership after cleanup"
 ss -lntp 2>/dev/null | grep -E ':(443|8443|18443|10443|10444|9443)([^0-9]|$)' || true
 
-if ss -H -lntp 'sport = :443' 2>/dev/null | grep -q .; then
-  echo
-  warn "TCP/443 is still occupied by a service that was not safely identified as an old tunnel component:"
-  ss -H -lntp 'sport = :443' 2>/dev/null || true
-  warn "Ali Pro installation will intentionally refuse to take over that port automatically."
-  echo "Backup saved at: $BACKUP"
-  exit 2
+PORT443="$(ss -H -lntp 'sport = :443' 2>/dev/null || true)"
+if [[ -n "$PORT443" ]]; then
+  if grep -Eqi 'xray|x-ui' <<<"$PORT443"; then
+    echo "TCP/443 is still owned by Xray/x-ui and was intentionally preserved (normal on a Foreign node)."
+  else
+    warn "TCP/443 is still occupied by a non-Xray service that cleanup did not safely remove:"
+    printf '%s\n' "$PORT443"
+    warn "If this is an Iran node, Ali Pro installation will refuse to take over 443 until this owner is handled."
+  fi
 fi
 
 echo
