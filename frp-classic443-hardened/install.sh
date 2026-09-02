@@ -113,7 +113,8 @@ if [[ "$ROLE" == iran ]]; then
   read -r -p "Dedicated FRP carrier domain (do NOT use it as users' Reality SNI): " DOMAIN
   bash "$tmp" --role iran --iran-ip "$IRAN_IP" --domain "$DOMAIN"
   ensure_resilience
-  nginx -t >/dev/null && systemctl reload nginx
+  nginx -t >/dev/null
+  systemctl restart nginx
   systemctl restart haproxy
   echo
   echo 'PAIR CODE (secret — paste only into the Foreign installer):'
