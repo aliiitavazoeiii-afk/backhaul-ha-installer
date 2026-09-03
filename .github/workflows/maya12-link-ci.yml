@@ -1,0 +1,26 @@
+name: Maya1 Maya2 Link CI
+
+on:
+  push:
+    branches:
+      - agent/maya1-maya2-linked-v1
+    paths:
+      - 'maya-failover-controller/link-maya2-to-maya1.sh'
+      - '.github/workflows/maya12-link-ci.yml'
+  pull_request:
+    paths:
+      - 'maya-failover-controller/link-maya2-to-maya1.sh'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: bash -n maya-failover-controller/link-maya2-to-maya1.sh
+      - name: Safety invariants
+        run: |
+          grep -q 'MAYA12_LINKED_DNS_V1' maya-failover-controller/link-maya2-to-maya1.sh
+          grep -q 'linked_records' maya-failover-controller/link-maya2-to-maya1.sh
+          grep -q 'DNS rollback' maya-failover-controller/link-maya2-to-maya1.sh
+          grep -q 'python3 -m py_compile' maya-failover-controller/link-maya2-to-maya1.sh
