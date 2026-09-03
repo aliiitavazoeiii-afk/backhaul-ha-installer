@@ -18,6 +18,24 @@ done
 command -v jq >/dev/null 2>&1 || { echo "jq is required." >&2; exit 1; }
 command -v curl >/dev/null 2>&1 || { echo "curl is required." >&2; exit 1; }
 
+# v1 could leave controller.py syntactically broken before restarting the service.
+# If that happened, restore the newest automatic pre-link backup first.
+if ! python3 -m py_compile "$CTRL" >/dev/null 2>&1; then
+  LATEST_BACKUP="$(find "$STATE/backups" -maxdepth 1 -type d -name 'maya12-link-*' -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR==1{$1=""; sub(/^ /,""); print}')"
+  [[ -n "$LATEST_BACKUP" && -f "$LATEST_BACKUP/controller.py" && -f "$LATEST_BACKUP/config.json" ]] || {
+    echo "controller.py is broken and no Maya12 backup was found." >&2
+    exit 1
+  }
+  echo "[i] Restoring controller from: $LATEST_BACKUP"
+  cp -a "$LATEST_BACKUP/controller.py" "$CTRL"
+  cp -a "$LATEST_BACKUP/config.json" "$CFG"
+  if [[ -f "$LATEST_BACKUP/maya-shared-schedule" ]]; then
+    cp -a "$LATEST_BACKUP/maya-shared-schedule" "$SCHED"
+  fi
+  python3 -m py_compile "$CTRL"
+  [[ ! -f "$SCHED" ]] || bash -n "$SCHED"
+fi
+
 load_secret(){
   local k="$1"
   awk -F= -v key="$k" '$1==key {sub(/^[^=]*=/,""); print; exit}' "$SECRETS"
@@ -87,6 +105,12 @@ cp -a "$CTRL" "$BACKUP/controller.py"
 cp -a "$CFG" "$BACKUP/config.json"
 [[ -f "$SCHED" ]] && cp -a "$SCHED" "$BACKUP/maya-shared-schedule" || true
 
+rollback_files(){
+  cp -a "$BACKUP/controller.py" "$CTRL"
+  cp -a "$BACKUP/config.json" "$CFG"
+  [[ -f "$BACKUP/maya-shared-schedule" ]] && cp -a "$BACKUP/maya-shared-schedule" "$SCHED" || true
+}
+
 TMP="$(mktemp)"
 jq --arg domain "$MAYA2_DOMAIN" --arg rid "$MAYA2_RECORD" '
   .services.maya1.linked_records =
@@ -97,52 +121,186 @@ rm -f "$TMP"
 
 python3 - "$CTRL" <<'PY'
 from pathlib import Path
-import re, sys
-p=Path(sys.argv[1])
-s=p.read_text(encoding='utf-8')
-marker='# MAYA12_LINKED_DNS_V1'
-if marker not in s:
-    pat=r'def switch_to\(cfg, secrets, name, svc, state, target, reason\):\n.*?\n\ndef refresh_dns_modes\(cfg, secrets, state\):'
-    repl='''def switch_to(cfg, secrets, name, svc, state, target, reason):\n    # MAYA12_LINKED_DNS_V1\n    ip = svc[f"{target}_iran_ip"]\n    zone_id = cfg["cloudflare"]["zone_id"]\n    ttl = cfg["cloudflare"].get("ttl", 60)\n    targets = [(svc["record_id"], svc.get("domain", name))]\n    if name == "maya1":\n        for linked in svc.get("linked_records", []):\n            rid = linked.get("record_id")\n            if rid:\n                targets.append((rid, linked.get("domain", "maya2")))\n\n    before = {}\n    changed = []\n    results = []\n    for rid, domain in targets:\n        before[rid] = cf_record(secrets, zone_id, rid)\n\n    try:\n        for rid, domain in targets:\n            rec = cf_switch(secrets, zone_id, rid, ip, ttl)\n            changed.append(rid)\n            results.append((domain, rec))\n    except Exception:\n        for rid in reversed(changed):\n            try:\n                cf_switch(secrets, zone_id, rid, before[rid]["content"], ttl)\n            except Exception as rb_err:\n                log(f"DNS rollback failed for {rid}: {rb_err}")\n        raise\n\n    rec = results[0][1]\n    st = state["services"][name]\n    st["mode"] = target\n    st["last_dns_ip"] = rec["content"]\n    st["active_failures"] = 0\n    st["blocked_alerted"] = False\n    st["last_switch_at"] = now_iso()\n    atomic_json(STATE_PATH, state)\n    mirror_text = ""\n    if len(results) > 1:\n        mirror_text = "\\nMirrors: " + ", ".join(f"{domain} -> {r['content']}" for domain, r in results[1:])\n    send_tg(\n        secrets,\n        f"🔁 {name.upper()} AUTO SWITCH\\n"\n        f"{svc['domain']}\\n"\n        f"→ {target.upper()} {ip}\\n"\n        f"Reason: {reason}\\n"\n        f"Cloudflare update: OK{mirror_text}"\n    )\n\n\ndef refresh_dns_modes(cfg, secrets, state):'''
-    ns,n=re.subn(pat,repl,s,flags=re.S)
-    if n != 1:
-        raise SystemExit('Could not patch switch_to safely; controller layout is unexpected.')
-    s=ns
+import sys
 
-    anchor='''        rec = cf_record(secrets, cfg["cloudflare"]["zone_id"], svc["record_id"])\n        ip = rec["content"]\n        mode = service_mode(svc, ip)'''
-    insert='''        rec = cf_record(secrets, cfg["cloudflare"]["zone_id"], svc["record_id"])\n        ip = rec["content"]\n        if name == "maya1":\n            for linked in svc.get("linked_records", []):\n                rid = linked.get("record_id")\n                if not rid:\n                    continue\n                try:\n                    lrec = cf_record(secrets, cfg["cloudflare"]["zone_id"], rid)\n                    if lrec.get("content") != ip:\n                        cf_switch(secrets, cfg["cloudflare"]["zone_id"], rid, ip, cfg["cloudflare"].get("ttl", 60))\n                        log(f"MAYA1 mirror resynced: {linked.get('domain','maya2')} -> {ip}")\n                except Exception as e:\n                    log(f"MAYA1 mirror sync failed for {linked.get('domain','maya2')}: {e}")\n        mode = service_mode(svc, ip)'''
+p = Path(sys.argv[1])
+s = p.read_text(encoding="utf-8")
+marker = "# MAYA12_LINKED_DNS_V2"
+
+if marker not in s:
+    start_sig = "def switch_to(cfg, secrets, name, svc, state, target, reason):"
+    end_sig = "\ndef refresh_dns_modes(cfg, secrets, state):"
+    start = s.find(start_sig)
+    end = s.find(end_sig, start)
+    if start < 0 or end < 0:
+        raise SystemExit("Could not locate switch_to safely; controller layout is unexpected.")
+
+    new_switch = r'''def switch_to(cfg, secrets, name, svc, state, target, reason):
+    # MAYA12_LINKED_DNS_V2
+    ip = svc[f"{target}_iran_ip"]
+    zone_id = cfg["cloudflare"]["zone_id"]
+    ttl = cfg["cloudflare"].get("ttl", 60)
+    targets = [(svc["record_id"], svc.get("domain", name))]
+    if name == "maya1":
+        for linked in svc.get("linked_records", []):
+            rid = linked.get("record_id")
+            if rid:
+                targets.append((rid, linked.get("domain", "maya2")))
+
+    before = {}
+    changed = []
+    results = []
+    for rid, domain in targets:
+        before[rid] = cf_record(secrets, zone_id, rid)
+
+    try:
+        for rid, domain in targets:
+            rec = cf_switch(secrets, zone_id, rid, ip, ttl)
+            changed.append(rid)
+            results.append((domain, rec))
+    except Exception:
+        for rid in reversed(changed):
+            try:
+                cf_switch(secrets, zone_id, rid, before[rid]["content"], ttl)
+            except Exception as rb_err:
+                log(f"DNS rollback failed for {rid}: {rb_err}")
+        raise
+
+    rec = results[0][1]
+    st = state["services"][name]
+    st["mode"] = target
+    st["last_dns_ip"] = rec["content"]
+    st["active_failures"] = 0
+    st["blocked_alerted"] = False
+    st["last_switch_at"] = now_iso()
+    atomic_json(STATE_PATH, state)
+
+    mirror_text = ""
+    if len(results) > 1:
+        mirror_text = "\nMirrors: " + ", ".join(
+            f"{domain} -> {item['content']}" for domain, item in results[1:]
+        )
+    send_tg(
+        secrets,
+        f"🔁 {name.upper()} AUTO SWITCH\n"
+        f"{svc['domain']}\n"
+        f"→ {target.upper()} {ip}\n"
+        f"Reason: {reason}\n"
+        f"Cloudflare update: OK{mirror_text}"
+    )
+'''
+    s = s[:start] + new_switch.rstrip() + "\n\n" + s[end + 1:]
+
+    anchor = '''        rec = cf_record(secrets, cfg["cloudflare"]["zone_id"], svc["record_id"])
+        ip = rec["content"]
+        mode = service_mode(svc, ip)'''
+    insert = '''        rec = cf_record(secrets, cfg["cloudflare"]["zone_id"], svc["record_id"])
+        ip = rec["content"]
+        if name == "maya1":
+            for linked in svc.get("linked_records", []):
+                rid = linked.get("record_id")
+                if not rid:
+                    continue
+                try:
+                    lrec = cf_record(secrets, cfg["cloudflare"]["zone_id"], rid)
+                    if lrec.get("content") != ip:
+                        cf_switch(
+                            secrets,
+                            cfg["cloudflare"]["zone_id"],
+                            rid,
+                            ip,
+                            cfg["cloudflare"].get("ttl", 60),
+                        )
+                        log(f"MAYA1 mirror resynced: {linked.get('domain','maya2')} -> {ip}")
+                except Exception as e:
+                    log(f"MAYA1 mirror sync failed for {linked.get('domain','maya2')}: {e}")
+        mode = service_mode(svc, ip)'''
     if anchor not in s:
-        raise SystemExit('Could not patch refresh_dns_modes safely; controller layout is unexpected.')
-    s=s.replace(anchor,insert,1)
-    p.write_text(s,encoding='utf-8')
+        raise SystemExit("Could not locate refresh_dns_modes anchor safely.")
+    s = s.replace(anchor, insert, 1)
+    p.write_text(s, encoding="utf-8")
 PY
 
 if [[ -f "$SCHED" ]]; then
 python3 - "$SCHED" <<'PY'
 from pathlib import Path
-import re, sys
-p=Path(sys.argv[1])
-s=p.read_text(encoding='utf-8')
-marker='# MAYA12_LINKED_DNS_V1'
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text(encoding="utf-8")
+marker = "# MAYA12_LINKED_DNS_V2"
 if marker not in s:
-    pat=r'cf_set\(\)\{\n.*?\n\}\n\nnotify\(\)\{'
-    repl='''cf_set(){\n  # MAYA12_LINKED_DNS_V1\n  local service="$1" ip="$2" zone record token ttl out rid old changed=()\n  zone="$(jq -r '.cloudflare.zone_id' "$CFG")"\n  record="$(jq -r ".services.${service}.record_id" "$CFG")"\n  ttl="$(jq -r '.cloudflare.ttl // 60' "$CFG")"\n  token="$(load_secret CLOUDFLARE_API_TOKEN)"\n  local targets=("$record")\n  if [[ "$service" == "maya1" ]]; then\n    while IFS= read -r rid; do [[ -n "$rid" ]] && targets+=("$rid"); done < <(jq -r '.services.maya1.linked_records[]?.record_id // empty' "$CFG")\n  fi\n  declare -A before=()\n  for rid in "${targets[@]}"; do\n    old="$(curl -fsS -H "Authorization: Bearer $token" "https://api.cloudflare.com/client/v4/zones/$zone/dns_records/$rid" | jq -r '.result.content // empty')"\n    [[ -n "$old" ]] || return 1\n    before["$rid"]="$old"\n  done\n  for rid in "${targets[@]}"; do\n    out="$(curl -fsS -X PATCH -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \\\n      --data "{\\"content\\":\\"$ip\\",\\"ttl\\":$ttl,\\"proxied\\":false}" \\\n      "https://api.cloudflare.com/client/v4/zones/$zone/dns_records/$rid")" || out=''\n    if [[ "$(jq -r '.success // false' <<<"$out" 2>/dev/null)" != true ]]; then\n      for rid in "${changed[@]}"; do\n        curl -fsS -X PATCH -H "Authorization: Bearer $token" -H 'Content-Type: application/json' \\\n          --data "{\\"content\\":\\"${before[$rid]}\\",\\"ttl\\":$ttl,\\"proxied\\":false}" \\\n          "https://api.cloudflare.com/client/v4/zones/$zone/dns_records/$rid" >/dev/null 2>&1 || true\n      done\n      return 1\n    fi\n    changed+=("$rid")\n  done\n}\n\nnotify(){'''
-    ns,n=re.subn(pat,repl,s,flags=re.S)
-    if n != 1:
-        raise SystemExit('Could not patch scheduler cf_set safely; layout is unexpected.')
-    p.write_text(ns,encoding='utf-8')
+    start_sig = "cf_set(){"
+    end_sig = "\n\nnotify(){"
+    start = s.find(start_sig)
+    end = s.find(end_sig, start)
+    if start < 0 or end < 0:
+        raise SystemExit("Could not locate scheduler cf_set safely.")
+
+    new_cf_set = r'''cf_set(){
+  # MAYA12_LINKED_DNS_V2
+  local service="$1" ip="$2" zone record token ttl out rid old
+  local -a targets changed
+  targets=()
+  changed=()
+  zone="$(jq -r '.cloudflare.zone_id' "$CFG")"
+  record="$(jq -r ".services.${service}.record_id" "$CFG")"
+  ttl="$(jq -r '.cloudflare.ttl // 60' "$CFG")"
+  token="$(load_secret CLOUDFLARE_API_TOKEN)"
+  targets+=("$record")
+  if [[ "$service" == "maya1" ]]; then
+    while IFS= read -r rid; do
+      [[ -n "$rid" ]] && targets+=("$rid")
+    done < <(jq -r '.services.maya1.linked_records[]?.record_id // empty' "$CFG")
+  fi
+
+  declare -A before=()
+  for rid in "${targets[@]}"; do
+    old="$(curl -fsS -H "Authorization: Bearer $token" \
+      "https://api.cloudflare.com/client/v4/zones/$zone/dns_records/$rid" | jq -r '.result.content // empty')"
+    [[ -n "$old" ]] || return 1
+    before["$rid"]="$old"
+  done
+
+  for rid in "${targets[@]}"; do
+    out="$(curl -fsS -X PATCH \
+      -H "Authorization: Bearer $token" \
+      -H 'Content-Type: application/json' \
+      --data "{\"content\":\"$ip\",\"ttl\":$ttl,\"proxied\":false}" \
+      "https://api.cloudflare.com/client/v4/zones/$zone/dns_records/$rid")" || out=''
+    if [[ "$(jq -r '.success // false' <<<"$out" 2>/dev/null)" != true ]]; then
+      for rid in "${changed[@]}"; do
+        curl -fsS -X PATCH \
+          -H "Authorization: Bearer $token" \
+          -H 'Content-Type: application/json' \
+          --data "{\"content\":\"${before[$rid]}\",\"ttl\":$ttl,\"proxied\":false}" \
+          "https://api.cloudflare.com/client/v4/zones/$zone/dns_records/$rid" >/dev/null 2>&1 || true
+      done
+      return 1
+    fi
+    changed+=("$rid")
+  done
+}'''
+    s = s[:start] + new_cf_set.rstrip() + "\n\n" + s[end + 2:]
+    p.write_text(s, encoding="utf-8")
 PY
 fi
 
-python3 -m py_compile "$CTRL"
-[[ ! -f "$SCHED" ]] || bash -n "$SCHED"
+if ! python3 -m py_compile "$CTRL"; then
+  rollback_files
+  echo "Controller syntax validation failed; files rolled back." >&2
+  exit 1
+fi
+if [[ -f "$SCHED" ]] && ! bash -n "$SCHED"; then
+  rollback_files
+  echo "Scheduler syntax validation failed; files rolled back." >&2
+  exit 1
+fi
 
-# Initial alignment: Maya2 follows the CURRENT Maya1 DNS before the service resumes.
+# Initial alignment: Maya2 follows the CURRENT Maya1 DNS before controller reload.
 ALIGN="$(cf_set_by_id "$MAYA2_RECORD" "$MAYA1_IP")"
 if [[ "$(jq -r '.success // false' <<<"$ALIGN")" != true ]]; then
-  cp -a "$BACKUP/controller.py" "$CTRL"
-  cp -a "$BACKUP/config.json" "$CFG"
-  [[ -f "$BACKUP/maya-shared-schedule" ]] && cp -a "$BACKUP/maya-shared-schedule" "$SCHED" || true
+  rollback_files
   echo "Initial Maya2 DNS alignment failed; files rolled back." >&2
   exit 1
 fi
@@ -150,15 +308,13 @@ fi
 if systemctl is-active --quiet "$SERVICE"; then
   systemctl restart "$SERVICE"
   sleep 2
-  systemctl is-active --quiet "$SERVICE" || {
-    cp -a "$BACKUP/controller.py" "$CTRL"
-    cp -a "$BACKUP/config.json" "$CFG"
-    [[ -f "$BACKUP/maya-shared-schedule" ]] && cp -a "$BACKUP/maya-shared-schedule" "$SCHED" || true
+  if ! systemctl is-active --quiet "$SERVICE"; then
+    rollback_files
     cf_set_by_id "$MAYA2_RECORD" "$MAYA2_OLD_IP" >/dev/null 2>&1 || true
     systemctl restart "$SERVICE" || true
     echo "Controller did not recover; rollback applied." >&2
     exit 1
-  }
+  fi
 fi
 
 M1_NOW="$(jq -r '.result.content' <<<"$(cf_get_by_id "$MAYA1_RECORD")")"
@@ -166,7 +322,7 @@ M2_NOW="$(jq -r '.result.content' <<<"$(cf_get_by_id "$MAYA2_RECORD")")"
 
 echo
 echo "Maya1/Maya2 linked DNS enabled."
-echo "Maya1: ${MAYA1_IP}"
+echo "Maya1: ${M1_NOW}"
 echo "Maya2: ${M2_NOW}"
 if [[ "$M1_NOW" == "$M2_NOW" ]]; then
   echo "SYNC: OK"
