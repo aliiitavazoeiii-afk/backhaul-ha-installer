@@ -44,7 +44,8 @@ curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 "$URL" -o "$TMP/xray.zip
 unzip -q "$TMP/xray.zip" -d "$TMP/xray"
 install -m 0755 "$TMP/xray/xray" "$INSTALL_DIR/xray"
 
-"$INSTALL_DIR/xray" version | head -1
+XRAY_VERSION_LINE="$("$INSTALL_DIR/xray" version 2>/dev/null | sed -n '1p')"
+echo "$XRAY_VERSION_LINE"
 
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
 if ss -lntH "( sport = :${XHTTP_PORT} )" 2>/dev/null | grep -q .; then
@@ -120,7 +121,7 @@ cat >"$CONFIG_DIR/server.json" <<EOF
         "decryption": "none"
       },
       "streamSettings": {
-        "method": "xhttp",
+        "network": "xhttp",
         "security": "reality",
         "xhttpSettings": {
           "path": "${XHTTP_PATH}"
@@ -199,11 +200,16 @@ systemctl enable --now "${SERVICE_NAME}.service"
 sleep 2
 
 echo "[7/8] Firewall..."
-if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
-  ufw allow "${XHTTP_PORT}/tcp"
-  echo "UFW allows TCP ${XHTTP_PORT}."
+if command -v ufw >/dev/null 2>&1; then
+  UFW_STATUS="$(ufw status 2>/dev/null || true)"
+  if grep -q "Status: active" <<<"$UFW_STATUS"; then
+    ufw allow "${XHTTP_PORT}/tcp"
+    echo "UFW allows TCP ${XHTTP_PORT}."
+  else
+    echo "UFW is not active. If your provider has a firewall/security group, allow TCP ${XHTTP_PORT} there."
+  fi
 else
-  echo "UFW is not active. If your provider has a firewall/security group, allow TCP ${XHTTP_PORT} there."
+  echo "UFW is not installed. If your provider has a firewall/security group, allow TCP ${XHTTP_PORT} there."
 fi
 
 echo "[8/8] Verification..."
