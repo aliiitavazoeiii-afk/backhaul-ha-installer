@@ -128,6 +128,12 @@ cat >"$CONFIG_DIR/client.json" <<EOF
           "publicKey": "${REALITY_PASSWORD}",
           "shortId": "${REALITY_SHORT_ID}"
         }
+      },
+      "mux": {
+        "enabled": true,
+        "concurrency": -1,
+        "xudpConcurrency": 16,
+        "xudpProxyUDP443": "reject"
       }
     }
   ]
@@ -220,6 +226,7 @@ echo "XHTTP + REALITY IRAN CLIENT READY"
 echo "Xray version : ${XRAY_VERSION}"
 echo "Local SOCKS  : 127.0.0.1:${SOCKS_PORT}"
 echo "Foreign      : ${FOREIGN_IP}:${PORT}/TCP"
+echo "UDP mode     : XUDP (UDP/443 rejected -> TCP fallback)"
 echo "Service      : ${SERVICE_NAME}.service"
 echo "Credentials  : /root/xhttp-reality-iran.env"
 echo "============================================================"
