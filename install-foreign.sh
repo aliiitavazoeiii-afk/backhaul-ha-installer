@@ -6,7 +6,7 @@ INSTALL_DIR="${INSTALL_DIR:-/usr/local/lib/xhttp-reality}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/xhttp-reality}"
 SERVICE_NAME="xhttp-reality-server"
 XHTTP_PORT="${XHTTP_PORT:-443}"
-REALITY_TARGET="${REALITY_TARGET:-www.microsoft.com:443}"
+REALITY_TARGET="${REALITY_TARGET:-www.cloudflare.com:443}"
 REALITY_SNI="${REALITY_SNI:-${REALITY_TARGET%%:*}}"
 FORCE_NEW_CREDENTIALS="${FORCE_NEW_CREDENTIALS:-0}"
 
