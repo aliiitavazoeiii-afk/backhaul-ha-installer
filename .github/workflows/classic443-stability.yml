@@ -24,57 +24,34 @@ jobs:
           bash -n frp-classic443-hardened/upgrade-stability-v3.sh
           bash -n frp-classic443-hardened/upgrade-mux-v4.sh
           bash -n frp-classic443-hardened/uninstall.sh
-      - name: Final mux-v4 invariants
+      - name: Final mux-v4 wrapper invariants
         run: |
           set -euo pipefail
           I=frp-classic443-hardened/install.sh
-          W=frp-classic443-hardened/install-mux-v4.sh
           U=frp-classic443-hardened/uninstall.sh
 
-          grep -q 'PROFILE_VERSION="classic443-mux-v4-final"' "$I"
-          grep -q 'POOL_COUNT=128' "$I"
-          grep -q 'MAX_POOL_COUNT=256' "$I"
-          grep -q 'transport.tcpMux = true' "$I"
-          grep -q 'transport.tcpMuxKeepaliveInterval = 30' "$I"
-          grep -q 'userConnTimeout = 30' "$I"
-          grep -q 'transport.dialServerTimeout = 12' "$I"
-          grep -q 'transport.heartbeatInterval = 30' "$I"
-          grep -q 'transport.heartbeatTimeout = 90' "$I"
-          grep -q 'transport.tls.trustedCaFile' "$I"
-          grep -q 'worker_connections 65535' "$I"
-          grep -q 'worker_rlimit_nofile 262144' "$I"
-          grep -q 'proxy_read_timeout 7d' "$I"
-          grep -q 'proxy_send_timeout 7d' "$I"
-          grep -q 'proxy_socket_keepalive on' "$I"
-          grep -q 'tcp-request inspect-delay 10s' "$I"
-          grep -q 'timeout client  24h' "$I"
-          grep -q 'timeout server  24h' "$I"
-          grep -q 'server frp_user 127.0.0.1:$PROXY_PORT' "$I"
-          grep -q 'MemoryHigh=512M' "$I"
-          grep -q 'MemoryMax=768M' "$I"
-          grep -q 'MemorySwapMax=0' "$I"
-          grep -q 'GOMEMLIMIT=512MiB' "$I"
-          grep -q 'GOGC=100' "$I"
-          grep -q 'FINAL_INSTALL_COMMIT="a6c8d7ffa375d13f6acea7eaa4c5588143f3121d"' "$W"
+          # Wrapper must always delegate to the immutable, field-tested final
+          # mux-v4 installer and never to a mutable branch URL.
+          grep -q 'BASE_COMMIT="44bf91a05897aca624614fabb6528453a146daa1"' "$I"
+          grep -q 'BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/${BASE_COMMIT}/frp-classic443-hardened/install.sh"' "$I"
+
+          # Fresh Iran installs may stop only idle/stock package services.
+          grep -q 'safe_stop_stock_haproxy' "$I"
+          grep -q 'HAProxy has live listeners' "$I"
+          grep -q 'HAProxy has application routing sections' "$I"
+          grep -q 'safe_stop_stock_nginx' "$I"
+          grep -q 'Nginx has active conf.d vhosts' "$I"
+          grep -q 'Nginx has enabled non-default sites' "$I"
+          grep -q 'Nginx has non-default live listeners' "$I"
+
+          # Do not touch these services at all on Foreign installs.
+          grep -q 'if \[\[ "$ROLE" == iran \]\]; then' "$I"
+
+          # Uninstall must still remove all project FRPC/FRPS drop-ins.
           grep -q 'rm -rf "$FRPC_DROPIN_DIR" "$FRPS_DROPIN_DIR"' "$U"
 
-          # Final production installer must not reintroduce the retired no-mux
-          # transport or shard fan-out.
-          if grep -q 'transport.tcpMux = false' "$I"; then
-            echo 'retired tcpMux=false found in final installer' >&2
-            exit 1
-          fi
-          if grep -Eiq 'enable[-_ ]?4[-_ ]?shard|shard@|16-shard' "$I" "$W"; then
-            echo 'shard logic found in final production profile' >&2
-            exit 1
-          fi
-
-          # User-plane backend must never actively health-check 10445.
-          if grep -Eq 'server frp_user .*check' "$I"; then
-            echo 'active HAProxy health-check found on FRP user backend' >&2
-            exit 1
-          fi
-          if grep -q '^healthCheck.type' "$I"; then
-            echo 'proxy-level FRP health polling found in final installer' >&2
+          # Production remains single-client/no-shard.
+          if grep -Eiq 'enable[-_ ]?4[-_ ]?shard|shard@|16-shard' "$I"; then
+            echo 'shard logic found in final production wrapper' >&2
             exit 1
           fi
