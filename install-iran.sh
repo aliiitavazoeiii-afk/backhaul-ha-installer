@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-XRAY_VERSION="${XRAY_VERSION:-v26.7.28}"
+XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/lib/xhttp-reality}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/xhttp-reality}"
 SERVICE_NAME="xhttp-reality-client"
@@ -24,7 +24,7 @@ XHTTP_PATH="${7:-${XHTTP_PATH:-}}"
 [[ -n "$PORT" ]] || read -r -p "Foreign XHTTP port [443]: " PORT
 PORT="${PORT:-443}"
 [[ -n "$VLESS_ID" ]] || read -r -p "VLESS ID: " VLESS_ID
-[[ -n "$REALITY_PASSWORD" ]] || read -r -p "REALITY Password (old PublicKey): " REALITY_PASSWORD
+[[ -n "$REALITY_PASSWORD" ]] || read -r -p "REALITY Password/PublicKey: " REALITY_PASSWORD
 [[ -n "$REALITY_SHORT_ID" ]] || read -r -p "REALITY Short ID: " REALITY_SHORT_ID
 [[ -n "$SNI" ]] || read -r -p "REALITY SNI: " SNI
 [[ -n "$XHTTP_PATH" ]] || read -r -p "XHTTP Path: " XHTTP_PATH
@@ -65,7 +65,8 @@ echo "[1/7] Installing Xray ${XRAY_VERSION}..."
 curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 "$URL" -o "$TMP/xray.zip"
 unzip -q "$TMP/xray.zip" -d "$TMP/xray"
 install -m 0755 "$TMP/xray/xray" "$INSTALL_DIR/xray"
-"$INSTALL_DIR/xray" version | head -1
+XRAY_VERSION_LINE="$("$INSTALL_DIR/xray" version 2>/dev/null | sed -n '1p')"
+echo "$XRAY_VERSION_LINE"
 
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
 if ss -lntH "( sport = :${SOCKS_PORT} )" 2>/dev/null | grep -q .; then
@@ -78,7 +79,7 @@ if ss -lntH "( sport = :${SOCKS_PORT} )" 2>/dev/null | grep -q .; then
   exit 1
 fi
 
-echo "[2/7] Writing Iran/client configuration..."
+echo "[2/7] Writing stable XHTTP + REALITY Iran/client configuration..."
 cat >"$CONFIG_DIR/client.json" <<EOF
 {
   "log": {
@@ -92,8 +93,7 @@ cat >"$CONFIG_DIR/client.json" <<EOF
       "protocol": "socks",
       "settings": {
         "auth": "noauth",
-        "udp": true,
-        "ip": "127.0.0.1"
+        "udp": true
       }
     }
   ],
@@ -102,21 +102,30 @@ cat >"$CONFIG_DIR/client.json" <<EOF
       "tag": "xhttp-reality-out",
       "protocol": "vless",
       "settings": {
-        "address": "${FOREIGN_IP}",
-        "port": ${PORT},
-        "id": "${VLESS_ID}",
-        "encryption": "none"
+        "vnext": [
+          {
+            "address": "${FOREIGN_IP}",
+            "port": ${PORT},
+            "users": [
+              {
+                "id": "${VLESS_ID}",
+                "encryption": "none"
+              }
+            ]
+          }
+        ]
       },
       "streamSettings": {
-        "method": "xhttp",
+        "network": "xhttp",
         "security": "reality",
         "xhttpSettings": {
+          "mode": "auto",
           "path": "${XHTTP_PATH}"
         },
         "realitySettings": {
           "serverName": "${SNI}",
           "fingerprint": "chrome",
-          "password": "${REALITY_PASSWORD}",
+          "publicKey": "${REALITY_PASSWORD}",
           "shortId": "${REALITY_SHORT_ID}"
         }
       }
@@ -182,8 +191,7 @@ fi
 echo "[6/7] End-to-end tunnel test..."
 TEST_OK=0
 for URL_TEST in "https://icanhazip.com" "https://www.gstatic.com/generate_204"; do
-  if curl -fsS --max-time 15 --connect-timeout 6 \
-      --socks5-hostname "127.0.0.1:${SOCKS_PORT}" "$URL_TEST" >/tmp/xhttp-reality-test.out; then
+  if curl -fsS --max-time 20 --connect-timeout 8 --socks5-hostname "127.0.0.1:${SOCKS_PORT}" "$URL_TEST" >/tmp/xhttp-reality-test.out; then
     TEST_OK=1
     break
   fi
@@ -209,10 +217,11 @@ fi
 echo
 echo "============================================================"
 echo "XHTTP + REALITY IRAN CLIENT READY"
-echo "Local SOCKS : 127.0.0.1:${SOCKS_PORT}"
-echo "Foreign     : ${FOREIGN_IP}:${PORT}/TCP"
-echo "Service     : ${SERVICE_NAME}.service"
-echo "Credentials : /root/xhttp-reality-iran.env"
+echo "Xray version : ${XRAY_VERSION}"
+echo "Local SOCKS  : 127.0.0.1:${SOCKS_PORT}"
+echo "Foreign      : ${FOREIGN_IP}:${PORT}/TCP"
+echo "Service      : ${SERVICE_NAME}.service"
+echo "Credentials  : /root/xhttp-reality-iran.env"
 echo "============================================================"
 
 [[ "$TEST_OK" -eq 1 ]]
