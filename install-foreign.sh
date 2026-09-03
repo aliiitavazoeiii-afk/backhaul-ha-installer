@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-XRAY_VERSION="${XRAY_VERSION:-v26.7.28}"
+XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/lib/xhttp-reality}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/xhttp-reality}"
 SERVICE_NAME="xhttp-reality-server"
@@ -43,7 +43,6 @@ echo "[1/8] Installing Xray ${XRAY_VERSION}..."
 curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 "$URL" -o "$TMP/xray.zip"
 unzip -q "$TMP/xray.zip" -d "$TMP/xray"
 install -m 0755 "$TMP/xray/xray" "$INSTALL_DIR/xray"
-
 XRAY_VERSION_LINE="$("$INSTALL_DIR/xray" version 2>/dev/null | sed -n '1p')"
 echo "$XRAY_VERSION_LINE"
 
@@ -100,7 +99,7 @@ timeout 12 "$INSTALL_DIR/xray" tls ping "$TARGET_HOST" >/tmp/xhttp-reality-tls-p
   echo "The server will still be configured; inspect /tmp/xhttp-reality-tls-ping.log if needed."
 }
 
-echo "[4/8] Writing server configuration..."
+echo "[4/8] Writing stable XHTTP + REALITY server configuration..."
 cat >"$CONFIG_DIR/server.json" <<EOF
 {
   "log": {
@@ -113,7 +112,7 @@ cat >"$CONFIG_DIR/server.json" <<EOF
       "port": ${XHTTP_PORT},
       "protocol": "vless",
       "settings": {
-        "users": [
+        "clients": [
           {
             "id": "${VLESS_ID}"
           }
@@ -124,6 +123,7 @@ cat >"$CONFIG_DIR/server.json" <<EOF
         "network": "xhttp",
         "security": "reality",
         "xhttpSettings": {
+          "mode": "auto",
           "path": "${XHTTP_PATH}"
         },
         "realitySettings": {
@@ -200,16 +200,11 @@ systemctl enable --now "${SERVICE_NAME}.service"
 sleep 2
 
 echo "[7/8] Firewall..."
-if command -v ufw >/dev/null 2>&1; then
-  UFW_STATUS="$(ufw status 2>/dev/null || true)"
-  if grep -q "Status: active" <<<"$UFW_STATUS"; then
-    ufw allow "${XHTTP_PORT}/tcp"
-    echo "UFW allows TCP ${XHTTP_PORT}."
-  else
-    echo "UFW is not active. If your provider has a firewall/security group, allow TCP ${XHTTP_PORT} there."
-  fi
+if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+  ufw allow "${XHTTP_PORT}/tcp"
+  echo "UFW allows TCP ${XHTTP_PORT}."
 else
-  echo "UFW is not installed. If your provider has a firewall/security group, allow TCP ${XHTTP_PORT} there."
+  echo "UFW is not active. If your provider has a firewall/security group, allow TCP ${XHTTP_PORT} there."
 fi
 
 echo "[8/8] Verification..."
