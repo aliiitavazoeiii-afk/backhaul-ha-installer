@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+[[ $EUID -eq 0 ]] || { echo "Run as root."; exit 1; }
+NODE="${1:-}"
+NEW_IP="${2:-}"
+[[ "$NODE" == "f1" || "$NODE" == "f2" ]] || { echo "Usage: xhttp-dual-replace-ip f1|f2 NEW_IP"; exit 2; }
+python3 - "$NEW_IP" <<'PY'
+import socket,sys
+try: socket.inet_aton(sys.argv[1])
+except OSError: raise SystemExit('Invalid IPv4 address')
+PY
+
+CFG_DIR=/etc/xhttp-dual
+INSTALL_DIR=/opt/xhttp-dual
+SERVICE="xhttp-dual-${NODE}.service"
+CLIENT_CFG="$CFG_DIR/${NODE}.json"
+MAIN_CFG="$CFG_DIR/config.json"
+ENV_FILE="$CFG_DIR/foreign${NODE#f}.env"
+SOCKS_PORT=11818
+[[ "$NODE" == "f2" ]] && SOCKS_PORT=11819
+
+[[ -f "$CLIENT_CFG" && -f "$MAIN_CFG" ]] || { echo "XHTTP dual config not found."; exit 1; }
+[[ -x "$INSTALL_DIR/xray" ]] || { echo "Xray binary not found: $INSTALL_DIR/xray"; exit 1; }
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BACKUP_DIR="/var/lib/xhttp-dual/ip-replace-backups/$STAMP-$NODE"
+mkdir -p "$BACKUP_DIR"
+cp -a "$CLIENT_CFG" "$BACKUP_DIR/"
+cp -a "$MAIN_CFG" "$BACKUP_DIR/"
+[[ -f "$ENV_FILE" ]] && cp -a "$ENV_FILE" "$BACKUP_DIR/"
+
+rollback() {
+  echo "Replacement failed; rolling back..."
+  cp -a "$BACKUP_DIR/$(basename "$CLIENT_CFG")" "$CLIENT_CFG"
+  cp -a "$BACKUP_DIR/$(basename "$MAIN_CFG")" "$MAIN_CFG"
+  if [[ -f "$BACKUP_DIR/$(basename "$ENV_FILE")" ]]; then
+    cp -a "$BACKUP_DIR/$(basename "$ENV_FILE")" "$ENV_FILE"
+  fi
+  systemctl restart "$SERVICE" || true
+}
+trap 'rc=$?; if (( rc != 0 )); then rollback; fi; exit $rc' EXIT
+
+python3 - "$NODE" "$NEW_IP" "$CLIENT_CFG" "$MAIN_CFG" <<'PY'
+import json,sys,os,tempfile
+node,new_ip,client_path,main_path=sys.argv[1:]
+
+def atomic(path,obj):
+    d=os.path.dirname(path)
+    fd,tmp=tempfile.mkstemp(prefix='.replace-',dir=d)
+    with os.fdopen(fd,'w') as f:
+        json.dump(obj,f,indent=2)
+        f.write('\n')
+    os.chmod(tmp,0o600)
+    os.replace(tmp,path)
+
+client=json.load(open(client_path))
+changed=False
+for outbound in client.get('outbounds',[]):
+    if outbound.get('protocol')!='vless':
+        continue
+    for vnext in (outbound.get('settings') or {}).get('vnext',[]):
+        vnext['address']=new_ip
+        changed=True
+if not changed:
+    raise SystemExit('No VLESS vnext address found in client config')
+atomic(client_path,client)
+
+main=json.load(open(main_path))
+nodes=main.setdefault('nodes',{})
+if node not in nodes:
+    raise SystemExit(f'{node} not found in controller config')
+nodes[node]['foreign_ip']=new_ip
+atomic(main_path,main)
+PY
+
+if [[ -f "$ENV_FILE" ]]; then
+  python3 - "$ENV_FILE" "$NEW_IP" <<'PY'
+import re,sys,os,tempfile
+path,ip=sys.argv[1:]
+text=open(path).read()
+if re.search(r'^FOREIGN_IP=',text,re.M):
+    text=re.sub(r"^FOREIGN_IP=.*$",f"FOREIGN_IP='{ip}'",text,flags=re.M)
+else:
+    text=f"FOREIGN_IP='{ip}'\n"+text
+fd,tmp=tempfile.mkstemp(prefix='.replace-',dir=os.path.dirname(path))
+with os.fdopen(fd,'w') as f:f.write(text)
+os.chmod(tmp,0o600)
+os.replace(tmp,path)
+PY
+fi
+
+"$INSTALL_DIR/xray" run -test -c "$CLIENT_CFG"
+systemctl restart "$SERVICE"
+sleep 2
+systemctl is-active --quiet "$SERVICE"
+
+CODE="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 20 --connect-timeout 8 --socks5-hostname "127.0.0.1:${SOCKS_PORT}" https://cp.cloudflare.com/generate_204 || true)"
+EGRESS="$(curl -fsS --max-time 20 --connect-timeout 8 --socks5-hostname "127.0.0.1:${SOCKS_PORT}" https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)"
+[[ "$CODE" == "200" || "$CODE" == "204" ]] || { echo "Health failed after replacement: HTTP=$CODE"; exit 1; }
+[[ -n "$EGRESS" ]] || { echo "Egress check failed after replacement."; exit 1; }
+
+trap - EXIT
+echo "NODE=$NODE"
+echo "NEW_IP=$NEW_IP"
+echo "HTTP=$CODE"
+echo "EGRESS=$EGRESS"
+echo "BACKUP=$BACKUP_DIR"
+echo "OK"
