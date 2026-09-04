@@ -14,7 +14,7 @@ prompt IRAN_KEY "Iran SSH private key path" "/root/.ssh/id_ed25519"
 prompt MAYA_HOST "secure-gorilla IP/host"
 prompt MAYA_USER "Maya SSH user" "root"
 prompt MAYA_PORT "Maya SSH port" "22"
-prompt MAYA_KEY "Maya SSH private key path" "/root/.ssh/id_ed25519"
+prompt MAYA_KEY "Maya SSH private key path" "$IRAN_KEY"
 prompt F1_IP "XHTTP Foreign F1 IP" "82.152.141.57"
 prompt F2_IP "XHTTP Foreign F2 IP" "82.152.141.58"
 prompt MAYA_DOMAIN "Maya1 domain" "maya1.biya2film.top"
@@ -28,6 +28,25 @@ fi
 
 apt-get update
 apt-get install -y python3 curl openssh-client ca-certificates dnsutils
+
+for key in "$IRAN_KEY" "$MAYA_KEY"; do
+  if [[ ! -f "$key" ]]; then
+    mkdir -p "$(dirname "$key")"
+    chmod 700 "$(dirname "$key")"
+    ssh-keygen -t ed25519 -N '' -f "$key"
+  fi
+done
+
+prompt COPY_KEYS "Run ssh-copy-id to Iran and Maya servers now? Y/n" "Y"
+if [[ "$COPY_KEYS" =~ ^[Yy]$ ]]; then
+  ssh-copy-id -i "${IRAN_KEY}.pub" -p "$IRAN_PORT" "$IRAN_USER@$IRAN_HOST"
+  if [[ "$MAYA_KEY" == "$IRAN_KEY" ]]; then
+    ssh-copy-id -i "${IRAN_KEY}.pub" -p "$MAYA_PORT" "$MAYA_USER@$MAYA_HOST"
+  else
+    ssh-copy-id -i "${MAYA_KEY}.pub" -p "$MAYA_PORT" "$MAYA_USER@$MAYA_HOST"
+  fi
+fi
+
 mkdir -p /opt/maya-watchdog /etc/maya-watchdog /var/lib/maya-watchdog
 chmod 700 /etc/maya-watchdog /var/lib/maya-watchdog
 curl -fsSL "$BASE_URL/watchdog.py" -o /opt/maya-watchdog/watchdog.py
@@ -77,15 +96,14 @@ Nice=10
 WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
+
+ssh -o BatchMode=yes -o ConnectTimeout=7 -i "$IRAN_KEY" -p "$IRAN_PORT" "$IRAN_USER@$IRAN_HOST" 'echo IRAN_SSH_OK'
+ssh -o BatchMode=yes -o ConnectTimeout=7 -i "$MAYA_KEY" -p "$MAYA_PORT" "$MAYA_USER@$MAYA_HOST" 'echo MAYA_SSH_OK'
+
 systemctl enable --now maya-watchdog.service
 sleep 2
 
 echo
-echo "SSH CHECKS"
-ssh -o BatchMode=yes -o ConnectTimeout=7 -p "$IRAN_PORT" ${IRAN_KEY:+-i "$IRAN_KEY"} "$IRAN_USER@$IRAN_HOST" 'echo IRAN_SSH_OK' || true
-ssh -o BatchMode=yes -o ConnectTimeout=7 -p "$MAYA_PORT" ${MAYA_KEY:+-i "$MAYA_KEY"} "$MAYA_USER@$MAYA_HOST" 'echo MAYA_SSH_OK' || true
-
-echo
 echo "INSTALL COMPLETE"
-echo "Run: maya-watchdog status"
+maya-watchdog status || true
 echo "Logs: journalctl -u maya-watchdog -f"
