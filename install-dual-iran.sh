@@ -16,7 +16,10 @@ RECOVERY_THRESHOLD="${RECOVERY_THRESHOLD:-5}"
 [[ $EUID -eq 0 ]] || { echo "Run as root."; exit 1; }
 
 prompt() {
-  local var="$1" text="$2" def="${3:-}" secret="${4:-0}" val="${!var:-}"
+  local var="$1" text="$2" def="${3:-}" secret="${4:-0}" val=""
+  if declare -p "$var" >/dev/null 2>&1; then
+    val="${!var}"
+  fi
   if [[ -z "$val" ]]; then
     if [[ "$secret" == "1" ]]; then
       read -r -s -p "$text${def:+ [$def]}: " val; echo
