@@ -8,12 +8,19 @@ DB_PATH="${XUI_DB_PATH:-/etc/x-ui/x-ui.db}"
 
 [[ $EUID -eq 0 ]] || { echo "Run as root."; exit 1; }
 
+install_color_cli() {
+  curl -fsSL "$BASE_URL/xhttp-dual-cli.sh" -o /usr/local/bin/xhttp-dual || return 1
+  chmod 0755 /usr/local/bin/xhttp-dual
+}
+
 curl -fsSL "$BASE_URL/install-dual-iran.sh" -o "$INSTALLER" || exit 1
 chmod +x "$INSTALLER"
 
 "$INSTALLER"
 RC=$?
 if [[ $RC -eq 0 ]]; then
+  install_color_cli || exit 1
+  /usr/local/bin/xhttp-dual status
   exit 0
 fi
 
@@ -30,6 +37,7 @@ if [[ -f /etc/xhttp-dual/config.json && -x /usr/local/bin/xhttp-dual && -f "$DB_
     systemctl daemon-reload
     systemctl enable --now xhttp-dual-controller.service || exit "$RC"
     sleep 2
+    install_color_cli || exit 1
     /usr/local/bin/xhttp-dual status
     echo
     echo "XHTTP DUAL STICKY FAILOVER READY"
