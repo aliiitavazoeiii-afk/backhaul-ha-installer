@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -38,12 +37,7 @@ def _fallback_users(rows):
 
 
 def get_vless_users_and_tags(db_path):
-    """Read the same client identities modern 3x-ui uses at runtime.
-
-    New 3x-ui stores canonical clients in clients + client_inbounds and rebuilds
-    inbound settings at runtime. Older versions keep clients only in
-    inbounds.settings. Prefer the canonical tables and fall back safely.
-    """
+    """Use the same canonical client identities modern 3x-ui emits to Xray."""
     con = mod.connect_db(db_path)
     try:
         cols = {r['name'] for r in con.execute('PRAGMA table_info(inbounds)')}
@@ -58,6 +52,7 @@ def get_vless_users_and_tags(db_path):
         vless_rows = [r for r in rows if str(r['protocol']).lower() == 'vless' and bool(r['enable'])]
         tags = sorted({str(r['tag']).strip() for r in vless_rows if str(r['tag'] or '').strip()})
 
+        # Modern 3x-ui: clients are canonical in clients + client_inbounds.
         if have_id and vless_rows and _table_exists(con, 'clients') and _table_exists(con, 'client_inbounds'):
             ccols = {r['name'] for r in con.execute('PRAGMA table_info(clients)')}
             if {'id', 'email'}.issubset(ccols):
@@ -69,12 +64,75 @@ def get_vless_users_and_tags(db_path):
                 if users:
                     return sorted(users), tags
 
+        # Older x-ui compatibility.
         return sorted(_fallback_users(vless_rows)), tags
     finally:
         con.close()
 
 
+def reconcile_users(state, users):
+    """Sticky home assignment + failover + automatic route restore to home.
+
+    Restoring effective->home only changes routing for NEW connections. Existing
+    TCP sessions remain on the failover node until the client reconnects, which
+    gives the gradual recovery behaviour wanted for this deployment.
+    """
+    changed = False
+    current = set(users)
+
+    for email in list(state['users']):
+        if email not in current:
+            del state['users'][email]
+            changed = True
+
+    avail = mod.available_nodes(state)
+
+    for email in users:
+        if email not in state['users']:
+            node = mod.choose_node_for_new(state, avail)
+            state['users'][email] = {
+                'home': node,
+                'effective': node,
+                'created': mod.dt.datetime.now().isoformat(timespec='seconds'),
+            }
+            changed = True
+
+    if not avail:
+        return changed
+
+    for email, u in state['users'].items():
+        home = u.get('home')
+        eff = u.get('effective')
+
+        # Failed/drained current path: move to a healthy survivor.
+        if eff not in avail:
+            if len(avail) == 1:
+                target = avail[0]
+            elif home in avail:
+                target = home
+            else:
+                counts = mod.assignment_counts(state)
+                target = 'f1' if counts['f1'] <= counts['f2'] else 'f2'
+            if eff != target:
+                mod.log(f'failover user {email}: {eff} -> {target}')
+                u['effective'] = target
+                u['moved_at'] = mod.dt.datetime.now().isoformat(timespec='seconds')
+                changed = True
+            continue
+
+        # Home recovered: restore routing immediately. Existing established
+        # sessions do not migrate; users return gradually as they reconnect.
+        if home in avail and eff != home:
+            mod.log(f'restore user {email}: {eff} -> home {home}')
+            u['effective'] = home
+            u['restored_at'] = mod.dt.datetime.now().isoformat(timespec='seconds')
+            changed = True
+
+    return changed
+
+
 mod.get_vless_users_and_tags = get_vless_users_and_tags
+mod.reconcile_users = reconcile_users
 
 
 def diagnose():
@@ -87,6 +145,7 @@ def diagnose():
     current = set(users)
     mapped = set(state.get('users', {}))
     print(f'mapped-current={len(mapped & current)} stale={len(mapped-current)} missing={len(current-mapped)}')
+    print(f'assigned={mod.assignment_counts(state)} home={mod.assignment_counts(state, key="home")}')
     try:
         _, template = mod.read_xray_template(cfg['db_path'])
         rules = (template.get('routing') or {}).get('rules') or []
