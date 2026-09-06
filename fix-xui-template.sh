@@ -25,7 +25,7 @@ mkdir -p "$BACKUP_DIR"
 chmod 700 "$BACKUP_DIR" 2>/dev/null || true
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP="$BACKUP_DIR/x-ui-before-template-bootstrap-$STAMP.db"
-cp -a "$DB_PATH" "$BACKUP"
+sqlite3 "$DB_PATH" ".backup '$BACKUP'"
 chmod 600 "$BACKUP" 2>/dev/null || true
 
 TMP="$(mktemp)"
