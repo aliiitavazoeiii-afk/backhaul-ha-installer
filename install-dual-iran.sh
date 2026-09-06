@@ -27,6 +27,27 @@ prompt() {
   printf -v "$target" '%s' "$val"
 }
 
+cleanup_partial() {
+  echo "Partial XHTTP Dual install detected; cleaning partial tunnel files only..."
+  systemctl disable --now xhttp-dual-controller.service xhttp-dual-f1.service xhttp-dual-f2.service 2>/dev/null || true
+  rm -f /etc/systemd/system/xhttp-dual-controller.service /etc/systemd/system/xhttp-dual-f1.service /etc/systemd/system/xhttp-dual-f2.service
+  systemctl daemon-reload
+  rm -f /usr/local/bin/xhttp-dual /usr/local/bin/xhttp-dual-replace
+  rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
+}
+
+# A failed pre-controller install cannot have patched x-ui yet. Clean it automatically.
+if [[ ! -f "$CONFIG_DIR/config.json" ]] && { systemctl cat xhttp-dual-f1.service >/dev/null 2>&1 || systemctl cat xhttp-dual-f2.service >/dev/null 2>&1 || [[ -d "$INSTALL_DIR" ]] || [[ -d "$CONFIG_DIR" ]]; }; then
+  cleanup_partial
+fi
+
+if [[ -f "$CONFIG_DIR/config.json" ]]; then
+  echo "XHTTP Dual is already installed."
+  echo "Status : xhttp-dual status"
+  echo "Replace: xhttp-dual-replace"
+  exit 1
+fi
+
 cat <<'EOF'
 ============================================================
 XHTTP DUAL FOREIGN - STICKY USER FAILOVER (IRAN)
@@ -79,7 +100,7 @@ chmod 700 "$CONFIG_DIR" "$STATE_DIR"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${ASSET}"
-echo "[1/8] Installing Xray ${XRAY_VERSION}..."
+echo "[1/9] Installing Xray ${XRAY_VERSION}..."
 curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 "$URL" -o "$TMP/xray.zip"
 unzip -q "$TMP/xray.zip" -d "$TMP/xray"
 install -m 0755 "$TMP/xray/xray" "$INSTALL_DIR/xray"
@@ -116,7 +137,7 @@ EOF
   "$INSTALL_DIR/xray" run -test -c "$CONFIG_DIR/${name}.json" >/dev/null
 }
 
-echo "[2/8] Writing two independent XHTTP clients..."
+echo "[2/9] Writing two independent XHTTP clients..."
 write_client f1 "$SOCKS1" "$F1_IP" "$F1_PORT" "$F1_VLESS_ID" "$F1_REALITY_PASSWORD" "$F1_SHORT_ID" "$F1_SNI" "$F1_PATH"
 write_client f2 "$SOCKS2" "$F2_IP" "$F2_PORT" "$F2_VLESS_ID" "$F2_REALITY_PASSWORD" "$F2_SHORT_ID" "$F2_SNI" "$F2_PATH"
 
@@ -163,7 +184,7 @@ WantedBy=multi-user.target
 EOF
 }
 
-echo "[3/8] Installing tunnel services..."
+echo "[3/9] Installing tunnel services..."
 install_service f1
 install_service f2
 systemctl daemon-reload
@@ -174,17 +195,31 @@ for p in "$SOCKS1" "$SOCKS2"; do
   ss -lntH "( sport = :$p )" | grep -q . || { echo "SOCKS $p did not start"; exit 1; }
 done
 
-echo "[4/8] End-to-end testing both foreign paths..."
+echo "[4/9] End-to-end testing both foreign paths..."
 test_path() {
   local label="$1" socks="$2"
   local ip
   ip="$(curl -fsS --max-time 20 --connect-timeout 8 --socks5-hostname "127.0.0.1:${socks}" https://icanhazip.com | tr -d '[:space:]')" || return 1
+  [[ -n "$ip" ]] || return 1
   echo "${label} egress: ${ip}"
 }
-test_path F1 "$SOCKS1" || { echo "Foreign #1 tunnel test FAILED"; exit 1; }
-test_path F2 "$SOCKS2" || { echo "Foreign #2 tunnel test FAILED"; exit 1; }
 
-echo "[5/8] Installing sticky/failover controller..."
+F1_OK=0
+F2_OK=0
+if test_path F1 "$SOCKS1"; then F1_OK=1; else echo "WARNING: Foreign #1 tunnel test FAILED; continuing if F2 works."; fi
+if test_path F2 "$SOCKS2"; then F2_OK=1; else echo "WARNING: Foreign #2 tunnel test FAILED; continuing if F1 works."; fi
+
+if (( F1_OK == 0 && F2_OK == 0 )); then
+  echo
+  echo "ERROR: BOTH foreign paths failed. x-ui was NOT modified."
+  echo "Check:"
+  echo "  systemctl status xhttp-dual-f1 xhttp-dual-f2 --no-pager"
+  echo "  journalctl -u xhttp-dual-f1 -n 50 --no-pager"
+  echo "  journalctl -u xhttp-dual-f2 -n 50 --no-pager"
+  exit 1
+fi
+
+echo "[5/9] Installing sticky/failover controller..."
 curl -fsSL "${BASE_URL}/dual-controller.py" -o "$INSTALL_DIR/controller.py"
 chmod 0755 "$INSTALL_DIR/controller.py"
 python3 -m py_compile "$INSTALL_DIR/controller.py"
@@ -211,6 +246,10 @@ exec /usr/bin/python3 /opt/xhttp-dual/controller.py "$@"
 EOF
 chmod 0755 /usr/local/bin/xhttp-dual
 
+echo "[6/9] Installing foreign replacement menu..."
+curl -fsSL "${BASE_URL}/replace-xhttp-node.sh" -o /usr/local/bin/xhttp-dual-replace
+chmod 0755 /usr/local/bin/xhttp-dual-replace
+
 cat >/etc/systemd/system/xhttp-dual-controller.service <<EOF
 [Unit]
 Description=XHTTP Dual Sticky User Load Balancer and Failover Controller
@@ -230,10 +269,10 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 
-echo "[6/8] Initial sticky 50/50 user mapping + safe x-ui patch..."
+echo "[7/9] Initial sticky user mapping + safe x-ui patch..."
 /usr/local/bin/xhttp-dual sync
 
-echo "[7/8] Starting automatic failover controller..."
+echo "[8/9] Starting automatic failover controller..."
 systemctl enable --now xhttp-dual-controller.service
 sleep 2
 
@@ -243,7 +282,7 @@ net.ipv4.tcp_congestion_control=bbr
 EOF
 sysctl --system >/dev/null 2>&1 || true
 
-echo "[8/8] Final status..."
+echo "[9/9] Final status..."
 /usr/local/bin/xhttp-dual status
 
 echo
@@ -252,12 +291,18 @@ cat <<EOF
 XHTTP DUAL STICKY FAILOVER READY
 F1            : ${F1_IP}:${F1_PORT} -> 127.0.0.1:${SOCKS1}
 F2            : ${F2_IP}:${F2_PORT} -> 127.0.0.1:${SOCKS2}
-User policy   : persistent per-email 50/50 assignment
-Failover      : 3 failures by default; moved users stay on survivor
-Recovery      : no automatic move-back (prevents IP flip/flapping)
+User policy   : persistent per-email sticky assignment
+Failover      : ${FAILURE_THRESHOLD} failed health checks by default
 Controller    : xhttp-dual-controller.service
 CLI           : xhttp-dual status|sync|drain|undrain|rebalance
+Replace menu  : xhttp-dual-replace
 State         : ${STATE_DIR}/state.json
-x-ui DB       : ${DB_PATH} (backup before every managed write)
 ============================================================
 EOF
+
+if (( F1_OK == 0 || F2_OK == 0 )); then
+  echo
+  echo "WARNING: installation completed with one unhealthy foreign node."
+  echo "Run: xhttp-dual status"
+  echo "Fix/replace the failed node with: xhttp-dual-replace"
+fi
