@@ -61,22 +61,12 @@ print('Removed DB-generated inbound tags from template:', ', '.join(sorted(set(r
 PY
 
 python3 -m json.tool "$TMP" >/dev/null
-VALUE="$(cat "$TMP")"
 
-sqlite3 "$DB_PATH" <<SQL
-BEGIN IMMEDIATE;
-INSERT INTO settings(key,value) VALUES('xrayTemplateConfig',$(printf "%q" "$VALUE"));
-COMMIT;
-SQL
-
-# The shell %q form is not SQL-safe on every sqlite build; verify and fall back via Python if needed.
-if ! sqlite3 "$DB_PATH" "SELECT 1 FROM settings WHERE key='xrayTemplateConfig' LIMIT 1;" | grep -qx 1; then
-  cp -a "$BACKUP" "$DB_PATH"
-  python3 - "$DB_PATH" "$TMP" <<'PY'
+python3 - "$DB_PATH" "$TMP" <<'PY'
 import sqlite3, sys
 p, f = sys.argv[1:]
 value = open(f, 'r', encoding='utf-8').read()
-con = sqlite3.connect(p)
+con = sqlite3.connect(p, timeout=15)
 try:
     con.execute('BEGIN IMMEDIATE')
     con.execute("INSERT INTO settings(key,value) VALUES(?,?)", ('xrayTemplateConfig', value))
@@ -84,7 +74,6 @@ try:
 finally:
     con.close()
 PY
-fi
 
 python3 - "$DB_PATH" <<'PY'
 import json, sqlite3, sys
