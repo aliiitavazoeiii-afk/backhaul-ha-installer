@@ -22,6 +22,12 @@ chmod +x "$INSTALLER"
 RC=$?
 if [[ $RC -eq 0 ]]; then
   finish_upgrade || exit 1
+  echo
+  echo "XHTTP DUAL STICKY FAILOVER READY"
+  echo "Status   : xhttp-dual status"
+  echo "Diagnose : xhttp-dual diagnose"
+  echo "Replace  : xhttp-dual-replace"
+  echo "Reset    : xhttp-dual-reset [all|f1|f2]"
   exit 0
 fi
 
@@ -44,6 +50,7 @@ if [[ -f /etc/xhttp-dual/config.json && -x /usr/local/bin/xhttp-dual && -f "$DB_
     echo "Status   : xhttp-dual status"
     echo "Diagnose : xhttp-dual diagnose"
     echo "Replace  : xhttp-dual-replace"
+    echo "Reset    : xhttp-dual-reset [all|f1|f2]"
     exit 0
   fi
 fi
