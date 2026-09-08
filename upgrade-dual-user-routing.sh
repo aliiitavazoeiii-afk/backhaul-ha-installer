@@ -5,6 +5,7 @@ BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-inst
 INSTALL_DIR="/opt/xhttp-dual"
 V2="$INSTALL_DIR/controller-v2.py"
 CLI="/usr/local/bin/xhttp-dual"
+RESET_CLI="/usr/local/bin/xhttp-dual-reset"
 SERVICE="/etc/systemd/system/xhttp-dual-controller.service"
 
 [[ $EUID -eq 0 ]] || { echo "Run as root."; exit 1; }
@@ -41,6 +42,9 @@ exec "$PYTHON" "$CONTROLLER" "$@"
 EOF
 chmod 0755 "$CLI"
 
+curl -fsSL "$BASE_URL/reset-dual-tunnel.sh" -o "$RESET_CLI"
+chmod 0755 "$RESET_CLI"
+
 if [[ -f "$SERVICE" ]]; then
   cp -a "$SERVICE" "$SERVICE.bak.$(date +%Y%m%d-%H%M%S)"
   sed -i 's#ExecStart=/usr/bin/python3 /opt/xhttp-dual/controller.py daemon#ExecStart=/usr/bin/python3 /opt/xhttp-dual/controller-v2.py daemon#' "$SERVICE"
@@ -59,3 +63,7 @@ echo "UPGRADE COMPLETE"
 xhttp-dual status
 echo
 xhttp-dual diagnose
+echo
+echo "Reset all : xhttp-dual-reset"
+echo "Reset F1  : xhttp-dual-reset f1"
+echo "Reset F2  : xhttp-dual-reset f2"
