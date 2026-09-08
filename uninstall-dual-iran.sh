@@ -34,6 +34,7 @@ systemctl reset-failed 2>/dev/null || true
 echo "[4/6] Removing dual project files..."
 rm -f /usr/local/bin/xhttp-dual
 rm -f /usr/local/bin/xhttp-dual-replace
+rm -f /usr/local/bin/xhttp-dual-reset
 rm -rf /opt/xhttp-dual
 rm -rf /etc/xhttp-dual
 rm -f /etc/sysctl.d/99-xhttp-dual-bbr.conf
