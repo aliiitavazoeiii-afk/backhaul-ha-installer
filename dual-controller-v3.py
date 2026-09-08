@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -14,12 +15,12 @@ spec.loader.exec_module(v2)
 mod = v2.mod
 
 
-def latency_health_check(node_cfg):
-    """End-to-end tunnel health with latency quarantine.
+def latency_probe(node_cfg):
+    """Return (ok, detail, reason) for the real end-to-end XHTTP path.
 
     A filtered/degraded path can still return HTTP 204, but only after several
-    seconds. Treat that as unhealthy so sticky users fail over instead of
-    remaining pinned to an unusably slow foreign node.
+    seconds. That is classified as slow so it can be quarantined before it
+    becomes a total timeout.
     """
     host = node_cfg['socks_host']
     port = str(node_cfg['socks_port'])
@@ -54,12 +55,69 @@ def latency_health_check(node_cfg):
         latency_ok = latency_ms <= max_latency_ms
         ok = http_ok and latency_ok
         reason = 'ok' if ok else ('slow' if http_ok and not latency_ok else 'failed')
-        return ok, f'http={code} rc={p.returncode} latency_ms={latency_ms} limit_ms={max_latency_ms} reason={reason}'
+        detail = f'http={code} rc={p.returncode} latency_ms={latency_ms} limit_ms={max_latency_ms} reason={reason}'
+        return ok, detail, reason
     except Exception as exc:
-        return False, f'exception={exc} reason=failed'
+        return False, f'exception={exc} reason=failed', 'failed'
+
+
+def latency_health_check(node_cfg):
+    ok, detail, _ = latency_probe(node_cfg)
+    return ok, detail
+
+
+def update_health_latency_aware(state, cfg):
+    """Hard failure and slow-path failure use separate strike thresholds.
+
+    Default behavior:
+      - hard timeout/error: 3 consecutive bad probes
+      - HTTP succeeds but e2e latency exceeds max_latency_ms: 2 bad probes
+      - recovery: 5 consecutive good probes
+    """
+    changed = False
+    hard_fth = int(cfg.get('failure_threshold', 3))
+    slow_fth = int(cfg.get('slow_failure_threshold', 2))
+    rth = int(cfg.get('recovery_threshold', 5))
+
+    for node in ('f1', 'f2'):
+        nstate = state['nodes'][node]
+        ok, detail, reason = latency_probe(cfg['nodes'][node])
+        nstate['last_check'] = mod.dt.datetime.now().isoformat(timespec='seconds')
+        nstate['last_detail'] = detail
+        nstate['last_reason'] = reason
+        m = re.search(r'latency_ms=(\d+)', detail)
+        nstate['last_latency_ms'] = int(m.group(1)) if m else None
+
+        old = nstate.get('healthy')
+        if ok:
+            nstate['failures'] = 0
+            nstate['slow_failures'] = 0
+            nstate['successes'] = int(nstate.get('successes', 0)) + 1
+            if old is None or (old is False and nstate['successes'] >= rth):
+                nstate['healthy'] = True
+        else:
+            nstate['successes'] = 0
+            nstate['failures'] = int(nstate.get('failures', 0)) + 1
+            if reason == 'slow':
+                nstate['slow_failures'] = int(nstate.get('slow_failures', 0)) + 1
+                threshold = slow_fth
+            else:
+                nstate['slow_failures'] = 0
+                threshold = hard_fth
+
+            if old is not False and nstate['failures'] >= threshold:
+                nstate['healthy'] = False
+
+        if old != nstate.get('healthy'):
+            nstate['last_change'] = mod.dt.datetime.now().isoformat(timespec='seconds')
+            changed = True
+            mod.log(f'{node} health {old} -> {nstate.get("healthy")} ({detail})')
+
+    return changed
 
 
 mod.health_check = latency_health_check
+mod.update_health = update_health_latency_aware
 
 
 if __name__ == '__main__':
