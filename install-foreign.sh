@@ -20,16 +20,24 @@ if ! [[ "$XHTTP_PORT" =~ ^[0-9]+$ ]] || (( XHTTP_PORT < 1 || XHTTP_PORT > 65535 
   exit 1
 fi
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
-apt-get install -y curl unzip jq openssl ca-certificates iproute2
+# Deliberately do NOT run apt-get update/install here.
+# Fresh Ubuntu/Debian VPS mirrors can be slow/unreachable even while GitHub works,
+# and this installer only needs curl + python3 + systemd, which are already present
+# on supported hosts in normal deployments. ZIP extraction and JSON validation use
+# Python so jq/unzip are not required.
+for cmd in curl python3 systemctl; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Required command is missing: $cmd"
+    echo "Install it manually, then rerun this installer."
+    exit 1
+  fi
+done
 
-ARCH="$(dpkg --print-architecture)"
-case "$ARCH" in
-  amd64) ASSET="Xray-linux-64.zip" ;;
-  arm64) ASSET="Xray-linux-arm64-v8a.zip" ;;
+case "$(uname -m)" in
+  x86_64|amd64) ASSET="Xray-linux-64.zip" ;;
+  aarch64|arm64) ASSET="Xray-linux-arm64-v8a.zip" ;;
   *)
-    echo "Unsupported architecture: $ARCH (supported: amd64, arm64)"
+    echo "Unsupported architecture: $(uname -m) (supported: amd64, arm64)"
     exit 1
     ;;
 esac
@@ -39,18 +47,43 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${ASSET}"
-echo "[1/8] Installing Xray ${XRAY_VERSION}..."
-curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 "$URL" -o "$TMP/xray.zip"
-unzip -q "$TMP/xray.zip" -d "$TMP/xray"
+echo "[1/8] Installing Xray ${XRAY_VERSION} (no apt required)..."
+curl -fL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 15 --max-time 180 "$URL" -o "$TMP/xray.zip"
+mkdir -p "$TMP/xray"
+python3 - "$TMP/xray.zip" "$TMP/xray" <<'PY'
+import os, sys, zipfile
+src, dst = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(src) as z:
+    z.extractall(dst)
+path = os.path.join(dst, 'xray')
+if not os.path.isfile(path):
+    raise SystemExit('xray binary not found in downloaded archive')
+PY
 install -m 0755 "$TMP/xray/xray" "$INSTALL_DIR/xray"
 XRAY_VERSION_LINE="$("$INSTALL_DIR/xray" version 2>/dev/null | sed -n '1p')"
 echo "$XRAY_VERSION_LINE"
 
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
-if ss -lntH "( sport = :${XHTTP_PORT} )" 2>/dev/null | grep -q .; then
+
+# Check that the requested IPv4 listen port can actually be bound, without
+# depending on ss/netstat/iproute2 being installed.
+if ! python3 - "$XHTTP_PORT" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+try:
+    s.bind(('0.0.0.0', port))
+except OSError as e:
+    print(f'TCP port {port} cannot be bound: {e}', file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    s.close()
+PY
+then
   echo
-  echo "TCP port ${XHTTP_PORT} is already in use:"
-  ss -lntp "( sport = :${XHTTP_PORT} )" || true
+  echo "TCP port ${XHTTP_PORT} is already in use or unavailable."
+  command -v ss >/dev/null 2>&1 && ss -lntp "( sport = :${XHTTP_PORT} )" || true
   echo
   echo "Free the port or rerun with another port, e.g.:"
   echo "  XHTTP_PORT=8443 ./install-foreign.sh"
@@ -62,14 +95,20 @@ SERVER_ENV="/root/xhttp-reality-server-secrets.env"
 
 if [[ "$FORCE_NEW_CREDENTIALS" != "1" && -f "$CLIENT_ENV" && -f "$SERVER_ENV" ]]; then
   echo "[2/8] Reusing existing tunnel credentials..."
+  # shellcheck disable=SC1090
   source "$CLIENT_ENV"
+  # shellcheck disable=SC1090
   source "$SERVER_ENV"
   XHTTP_PORT="${XHTTP_PORT_OVERRIDE:-${PORT:-$XHTTP_PORT}}"
   REALITY_TARGET="${REALITY_TARGET_OVERRIDE:-${TARGET:-$REALITY_TARGET}}"
   REALITY_SNI="${REALITY_SNI_OVERRIDE:-${SNI:-$REALITY_SNI}}"
 else
   echo "[2/8] Generating fresh VLESS / REALITY credentials..."
-  VLESS_ID="$(cat /proc/sys/kernel/random/uuid)"
+  VLESS_ID="$(python3 - <<'PY'
+import uuid
+print(uuid.uuid4())
+PY
+)"
   KEY_OUTPUT="$("$INSTALL_DIR/xray" x25519)"
   REALITY_PRIVATE_KEY="$(printf '%s\n' "$KEY_OUTPUT" | awk -F': ' '/^PrivateKey:/{print $2; exit}')"
   REALITY_PASSWORD="$(printf '%s\n' "$KEY_OUTPUT" | awk -F': ' '/^(Password|Password \(PublicKey\)):/{print $2; exit}')"
@@ -78,8 +117,12 @@ else
     printf '%s\n' "$KEY_OUTPUT"
     exit 1
   fi
-  REALITY_SHORT_ID="$(openssl rand -hex 8)"
-  XHTTP_PATH="/api/v1/$(openssl rand -hex 8)"
+  read -r REALITY_SHORT_ID XHTTP_TOKEN < <(python3 - <<'PY'
+import secrets
+print(secrets.token_hex(8), secrets.token_hex(8))
+PY
+)
+  XHTTP_PATH="/api/v1/${XHTTP_TOKEN}"
 fi
 
 : "${VLESS_ID:?Missing VLESS_ID}"
@@ -149,7 +192,7 @@ cat >"$CONFIG_DIR/server.json" <<EOF
 }
 EOF
 chmod 600 "$CONFIG_DIR/server.json"
-jq empty "$CONFIG_DIR/server.json"
+python3 -m json.tool "$CONFIG_DIR/server.json" >/dev/null
 
 echo "[5/8] Validating Xray configuration..."
 "$INSTALL_DIR/xray" run -test -c "$CONFIG_DIR/server.json"
@@ -189,11 +232,13 @@ TasksMax=infinity
 WantedBy=multi-user.target
 EOF
 
-cat >/etc/sysctl.d/99-xhttp-reality-bbr.conf <<'EOF'
+if command -v sysctl >/dev/null 2>&1; then
+  cat >/etc/sysctl.d/99-xhttp-reality-bbr.conf <<'EOF'
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
-sysctl --system >/dev/null 2>&1 || true
+  sysctl --system >/dev/null 2>&1 || true
+fi
 
 systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}.service"
@@ -210,7 +255,21 @@ fi
 echo "[8/8] Verification..."
 systemctl --no-pager --full status "${SERVICE_NAME}.service" | sed -n '1,14p' || true
 echo
-ss -lntp "( sport = :${XHTTP_PORT} )" || true
+if command -v ss >/dev/null 2>&1; then
+  ss -lntp "( sport = :${XHTTP_PORT} )" || true
+else
+  python3 - "$XHTTP_PORT" <<'PY'
+import socket, sys
+port = int(sys.argv[1])
+s = socket.socket()
+s.settimeout(2)
+try:
+    rc = s.connect_ex(('127.0.0.1', port))
+    print(f'127.0.0.1:{port} listening={rc == 0}')
+finally:
+    s.close()
+PY
+fi
 
 echo
 echo "============================================================"
