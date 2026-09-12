@@ -1,0 +1,31 @@
+name: XHTTP Dual v4 checks
+
+on:
+  push:
+    branches: [xhttp-dual-sticky-failover]
+  pull_request:
+    branches: [xhttp-dual-sticky-failover]
+
+permissions:
+  contents: read
+
+jobs:
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bash syntax
+        run: |
+          bash -n install-foreign.sh
+          bash -n install-dual-iran.sh
+          bash -n install-dual-iran-final.sh
+          bash -n upgrade-dual-user-routing.sh
+          bash -n upgrade-dual-latency-health.sh
+          bash -n upgrade-dual-hardening.sh
+          bash -n upgrade-foreign-reality-hardening.sh
+          bash -n set-xhttp-node-sni.sh
+          bash -n replace-xhttp-node.sh
+          bash -n reset-dual-tunnel.sh
+      - name: Python syntax
+        run: |
+          python3 -m py_compile dual-controller.py dual-controller-v2.py dual-controller-v3.py dual-controller-v4.py
