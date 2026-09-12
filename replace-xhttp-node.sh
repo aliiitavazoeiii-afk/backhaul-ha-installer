@@ -20,6 +20,11 @@ cat <<'EOF'
 ============================================================
 XHTTP DUAL - REPLACE FOREIGN NODE
 ============================================================
+IMPORTANT: Copy the EXACT values from the NEW Foreign server:
+  cat /root/xhttp-reality-client.env
+Do not assume the SNI is www.cloudflare.com. Current Foreign installs may
+activate REALITY camouflage and use a different SNI (normally noded.cloud).
+============================================================
 1) Replace Foreign #1 (F1)
 2) Replace Foreign #2 (F2)
 0) Exit
@@ -45,12 +50,26 @@ prompt NEW_PORT "New Foreign #${NUM} port" "443"
 prompt NEW_UUID "New Foreign #${NUM} VLESS ID"
 prompt NEW_PUB "New Foreign #${NUM} REALITY Password/PublicKey"
 prompt NEW_SID "New Foreign #${NUM} Short ID"
-prompt NEW_SNI "New Foreign #${NUM} REALITY SNI" "www.cloudflare.com"
+prompt NEW_SNI "New Foreign #${NUM} REALITY SNI (EXACT value from client env)"
 prompt NEW_PATH "New Foreign #${NUM} XHTTP Path"
 
 [[ -n "$NEW_IP" && -n "$NEW_UUID" && -n "$NEW_PUB" && -n "$NEW_SID" && -n "$NEW_SNI" && -n "$NEW_PATH" ]] || { echo "All values are required."; exit 1; }
 [[ "$NEW_PORT" =~ ^[0-9]+$ ]] && (( NEW_PORT >= 1 && NEW_PORT <= 65535 )) || { echo "Invalid port"; exit 1; }
 [[ "$SOCKS_PORT" =~ ^[0-9]+$ ]] || { echo "Invalid local SOCKS port in config"; exit 1; }
+
+if [[ "$NEW_SNI" == "www.cloudflare.com" ]]; then
+  echo
+  echo "WARNING: SNI=www.cloudflare.com was entered."
+  echo "The current Foreign installer normally hardens REALITY to another SNI."
+  echo "Use Cloudflare only if /root/xhttp-reality-client.env on the NEW Foreign literally says:"
+  echo "  SNI='www.cloudflare.com'"
+fi
+
+echo
+echo "New node values to be tested:"
+echo "  IP/port : ${NEW_IP}:${NEW_PORT}"
+echo "  SNI     : ${NEW_SNI}"
+echo "  XHTTP   : ${NEW_PATH}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -127,11 +146,11 @@ EOF
 chmod 600 "$ENV_FILE"
 
 TMP_CFG="$TMP/config.json"
-jq --arg n "$NODE" --arg ip "$NEW_IP" '.nodes[$n].foreign_ip=$ip' "$CONFIG_DIR/config.json" >"$TMP_CFG"
+jq --arg n "$NODE" --arg ip "$NEW_IP" --argjson port "$NEW_PORT" '.nodes[$n].foreign_ip=$ip | .nodes[$n].foreign_port=$port' "$CONFIG_DIR/config.json" >"$TMP_CFG"
 install -m 0600 "$TMP_CFG" "$CONFIG_DIR/config.json"
 
 if [[ -f "$STATE_DIR/state.json" ]]; then
-  jq --arg n "$NODE" '.nodes[$n].healthy=null | .nodes[$n].failures=0 | .nodes[$n].successes=0 | .nodes[$n].drained=false | .nodes[$n].last_detail="replaced; awaiting health check"' "$STATE_DIR/state.json" >"$TMP/state.json"
+  jq --arg n "$NODE" '.nodes[$n].healthy=null | .nodes[$n].failures=0 | .nodes[$n].slow_failures=0 | .nodes[$n].successes=0 | .nodes[$n].drained=false | .nodes[$n].last_latency_ms=null | .nodes[$n].last_reason=null | .nodes[$n].last_detail="replaced; awaiting health check"' "$STATE_DIR/state.json" >"$TMP/state.json"
   install -m 0600 "$TMP/state.json" "$STATE_DIR/state.json"
 fi
 
@@ -159,6 +178,7 @@ echo "============================================================"
 echo "${NODE^^} REPLACED SUCCESSFULLY"
 echo "Old foreign : ${OLD_IP}"
 echo "New foreign : ${NEW_IP}:${NEW_PORT}"
+echo "SNI         : ${NEW_SNI}"
 echo "Egress      : ${EGRESS}"
 echo "Backup      : ${BACKUP_DIR}"
 echo "============================================================"
