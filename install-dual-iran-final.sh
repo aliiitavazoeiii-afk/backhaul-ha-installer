@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -u
 
-BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/xhttp-dual-sticky-failover"
+PROJECT_REF="${PROJECT_REF:-xhttp-dual-sticky-failover}"
+BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/${PROJECT_REF}"
 INSTALLER="/root/install-dual-iran.sh"
 FIXER="/root/fix-xui-template.sh"
 UPGRADER="/root/upgrade-dual-user-routing.sh"
 LATENCY_UPGRADER="/root/upgrade-dual-latency-health.sh"
+HARDENING_UPGRADER="/root/upgrade-dual-hardening.sh"
 DB_PATH="${XUI_DB_PATH:-/etc/x-ui/x-ui.db}"
 
 [[ $EUID -eq 0 ]] || { echo "Run as root."; exit 1; }
@@ -22,6 +24,12 @@ finish_latency_upgrade() {
   "$LATENCY_UPGRADER"
 }
 
+finish_hardening_upgrade() {
+  curl -fsSL "$BASE_URL/upgrade-dual-hardening.sh" -o "$HARDENING_UPGRADER" || return 1
+  chmod +x "$HARDENING_UPGRADER"
+  PROJECT_REF="$PROJECT_REF" "$HARDENING_UPGRADER"
+}
+
 curl -fsSL "$BASE_URL/install-dual-iran.sh" -o "$INSTALLER" || exit 1
 chmod +x "$INSTALLER"
 
@@ -30,10 +38,12 @@ RC=$?
 if [[ $RC -eq 0 ]]; then
   finish_upgrade || exit 1
   finish_latency_upgrade || exit 1
+  finish_hardening_upgrade || exit 1
   echo
-  echo "XHTTP DUAL STICKY FAILOVER READY"
+  echo "XHTTP DUAL STICKY FAILOVER V4 READY"
   echo "Status   : xhttp-dual status"
   echo "Diagnose : xhttp-dual diagnose"
+  echo "Netcheck : xhttp-dual netcheck"
   echo "Replace  : xhttp-dual-replace"
   echo "Reset    : xhttp-dual-reset [all|f1|f2]"
   exit 0
@@ -54,10 +64,12 @@ if [[ -f /etc/xhttp-dual/config.json && -x /usr/local/bin/xhttp-dual && -f "$DB_
     sleep 2
     finish_upgrade || exit 1
     finish_latency_upgrade || exit 1
+    finish_hardening_upgrade || exit 1
     echo
-    echo "XHTTP DUAL STICKY FAILOVER READY"
+    echo "XHTTP DUAL STICKY FAILOVER V4 READY"
     echo "Status   : xhttp-dual status"
     echo "Diagnose : xhttp-dual diagnose"
+    echo "Netcheck : xhttp-dual netcheck"
     echo "Replace  : xhttp-dual-replace"
     echo "Reset    : xhttp-dual-reset [all|f1|f2]"
     exit 0
