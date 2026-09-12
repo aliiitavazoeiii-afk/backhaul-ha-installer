@@ -15,13 +15,13 @@ DB_PATH="${XUI_DB_PATH:-/etc/x-ui/x-ui.db}"
 finish_upgrade() {
   curl -fsSL "$BASE_URL/upgrade-dual-user-routing.sh" -o "$UPGRADER" || return 1
   chmod +x "$UPGRADER"
-  "$UPGRADER"
+  PROJECT_REF="$PROJECT_REF" "$UPGRADER"
 }
 
 finish_latency_upgrade() {
   curl -fsSL "$BASE_URL/upgrade-dual-latency-health.sh" -o "$LATENCY_UPGRADER" || return 1
   chmod +x "$LATENCY_UPGRADER"
-  "$LATENCY_UPGRADER"
+  PROJECT_REF="$PROJECT_REF" "$LATENCY_UPGRADER"
 }
 
 finish_hardening_upgrade() {
@@ -33,7 +33,7 @@ finish_hardening_upgrade() {
 curl -fsSL "$BASE_URL/install-dual-iran.sh" -o "$INSTALLER" || exit 1
 chmod +x "$INSTALLER"
 
-"$INSTALLER"
+PROJECT_REF="$PROJECT_REF" "$INSTALLER"
 RC=$?
 if [[ $RC -eq 0 ]]; then
   finish_upgrade || exit 1
