@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PROJECT_REF="${PROJECT_REF:-xhttp-dual-sticky-failover}"
+BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/${PROJECT_REF}"
 XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"
+XRAY_SHA256="${XRAY_SHA256:-}"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/lib/xhttp-reality}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/xhttp-reality}"
 SERVICE_NAME="xhttp-reality-server"
@@ -9,6 +12,8 @@ XHTTP_PORT="${XHTTP_PORT:-443}"
 REALITY_TARGET="${REALITY_TARGET:-www.cloudflare.com:443}"
 REALITY_SNI="${REALITY_SNI:-${REALITY_TARGET%%:*}}"
 FORCE_NEW_CREDENTIALS="${FORCE_NEW_CREDENTIALS:-0}"
+ENABLE_REALITY_DECOY="${ENABLE_REALITY_DECOY:-1}"
+DECOY_ZONE="${DECOY_ZONE:-nip.io}"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run as root."
@@ -21,10 +26,6 @@ if ! [[ "$XHTTP_PORT" =~ ^[0-9]+$ ]] || (( XHTTP_PORT < 1 || XHTTP_PORT > 65535 
 fi
 
 # Deliberately do NOT run apt-get update/install here.
-# Fresh Ubuntu/Debian VPS mirrors can be slow/unreachable even while GitHub works,
-# and this installer only needs curl + python3 + systemd, which are already present
-# on supported hosts in normal deployments. ZIP extraction and JSON validation use
-# Python so jq/unzip are not required.
 for cmd in curl python3 systemctl; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Required command is missing: $cmd"
@@ -34,21 +35,40 @@ for cmd in curl python3 systemctl; do
 done
 
 case "$(uname -m)" in
-  x86_64|amd64) ASSET="Xray-linux-64.zip" ;;
-  aarch64|arm64) ASSET="Xray-linux-arm64-v8a.zip" ;;
+  x86_64|amd64)
+    ASSET="Xray-linux-64.zip"
+    [[ -n "$XRAY_SHA256" ]] || [[ "$XRAY_VERSION" != "v26.3.27" ]] || XRAY_SHA256="23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
+    ;;
+  aarch64|arm64)
+    ASSET="Xray-linux-arm64-v8a.zip"
+    [[ -n "$XRAY_SHA256" ]] || [[ "$XRAY_VERSION" != "v26.3.27" ]] || XRAY_SHA256="4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c"
+    ;;
   *)
     echo "Unsupported architecture: $(uname -m) (supported: amd64, arm64)"
     exit 1
     ;;
 esac
+if [[ -z "$XRAY_SHA256" ]]; then
+  echo "No trusted SHA256 is built in for ${XRAY_VERSION}/${ASSET}."
+  echo "Set XRAY_SHA256 explicitly before using a custom Xray version."
+  exit 1
+fi
 
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${ASSET}"
-echo "[1/8] Installing Xray ${XRAY_VERSION} (no apt required)..."
+echo "[1/9] Installing verified Xray ${XRAY_VERSION} (no apt required)..."
 curl -fL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 15 --max-time 180 "$URL" -o "$TMP/xray.zip"
+python3 - "$TMP/xray.zip" "$XRAY_SHA256" <<'PY'
+import hashlib, sys
+path, expected = sys.argv[1:]
+h = hashlib.sha256(open(path, 'rb').read()).hexdigest()
+if h != expected:
+    raise SystemExit(f'Xray SHA256 mismatch: got {h}, expected {expected}')
+print(f'Xray SHA256 verified: {h}')
+PY
 mkdir -p "$TMP/xray"
 python3 - "$TMP/xray.zip" "$TMP/xray" <<'PY'
 import os, sys, zipfile
@@ -65,8 +85,6 @@ echo "$XRAY_VERSION_LINE"
 
 systemctl stop "${SERVICE_NAME}.service" 2>/dev/null || true
 
-# Check that the requested IPv4 listen port can actually be bound, without
-# depending on ss/netstat/iproute2 being installed.
 if ! python3 - "$XHTTP_PORT" <<'PY'
 import socket, sys
 port = int(sys.argv[1])
@@ -94,16 +112,14 @@ CLIENT_ENV="/root/xhttp-reality-client.env"
 SERVER_ENV="/root/xhttp-reality-server-secrets.env"
 
 if [[ "$FORCE_NEW_CREDENTIALS" != "1" && -f "$CLIENT_ENV" && -f "$SERVER_ENV" ]]; then
-  echo "[2/8] Reusing existing tunnel credentials..."
-  # shellcheck disable=SC1090
+  echo "[2/9] Reusing existing tunnel credentials..."
   source "$CLIENT_ENV"
-  # shellcheck disable=SC1090
   source "$SERVER_ENV"
   XHTTP_PORT="${XHTTP_PORT_OVERRIDE:-${PORT:-$XHTTP_PORT}}"
   REALITY_TARGET="${REALITY_TARGET_OVERRIDE:-${TARGET:-$REALITY_TARGET}}"
   REALITY_SNI="${REALITY_SNI_OVERRIDE:-${SNI:-$REALITY_SNI}}"
 else
-  echo "[2/8] Generating fresh VLESS / REALITY credentials..."
+  echo "[2/9] Generating fresh VLESS / REALITY credentials..."
   VLESS_ID="$(python3 - <<'PY'
 import uuid
 print(uuid.uuid4())
@@ -135,66 +151,43 @@ PORT="$XHTTP_PORT"
 TARGET="$REALITY_TARGET"
 SNI="$REALITY_SNI"
 
-echo "[3/8] Checking REALITY camouflage target..."
+echo "[3/9] Checking initial REALITY camouflage target..."
 TARGET_HOST="${REALITY_TARGET%:*}"
 timeout 12 "$INSTALL_DIR/xray" tls ping "$TARGET_HOST" >/tmp/xhttp-reality-tls-ping.log 2>&1 || {
   echo "Warning: xray tls ping to ${TARGET_HOST} did not complete successfully."
   echo "The server will still be configured; inspect /tmp/xhttp-reality-tls-ping.log if needed."
 }
 
-echo "[4/8] Writing stable XHTTP + REALITY server configuration..."
+echo "[4/9] Writing XHTTP + REALITY server configuration..."
 cat >"$CONFIG_DIR/server.json" <<EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
-  "inbounds": [
-    {
-      "tag": "xhttp-reality-in",
-      "listen": "0.0.0.0",
-      "port": ${XHTTP_PORT},
-      "protocol": "vless",
-      "settings": {
-        "clients": [
-          {
-            "id": "${VLESS_ID}"
-          }
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "xhttp",
-        "security": "reality",
-        "xhttpSettings": {
-          "mode": "auto",
-          "path": "${XHTTP_PATH}"
-        },
-        "realitySettings": {
-          "show": false,
-          "target": "${REALITY_TARGET}",
-          "serverNames": [
-            "${REALITY_SNI}"
-          ],
-          "privateKey": "${REALITY_PRIVATE_KEY}",
-          "shortIds": [
-            "${REALITY_SHORT_ID}"
-          ]
-        }
+  "log": {"loglevel": "warning"},
+  "inbounds": [{
+    "tag": "xhttp-reality-in",
+    "listen": "0.0.0.0",
+    "port": ${XHTTP_PORT},
+    "protocol": "vless",
+    "settings": {"clients": [{"id": "${VLESS_ID}"}], "decryption": "none"},
+    "streamSettings": {
+      "network": "xhttp",
+      "security": "reality",
+      "xhttpSettings": {"mode": "auto", "path": "${XHTTP_PATH}"},
+      "realitySettings": {
+        "show": false,
+        "target": "${REALITY_TARGET}",
+        "serverNames": ["${REALITY_SNI}"],
+        "privateKey": "${REALITY_PRIVATE_KEY}",
+        "shortIds": ["${REALITY_SHORT_ID}"]
       }
     }
-  ],
-  "outbounds": [
-    {
-      "tag": "direct",
-      "protocol": "freedom"
-    }
-  ]
+  }],
+  "outbounds": [{"tag": "direct", "protocol": "freedom"}]
 }
 EOF
 chmod 600 "$CONFIG_DIR/server.json"
 python3 -m json.tool "$CONFIG_DIR/server.json" >/dev/null
 
-echo "[5/8] Validating Xray configuration..."
+echo "[5/9] Validating Xray configuration..."
 "$INSTALL_DIR/xray" run -test -c "$CONFIG_DIR/server.json"
 
 cat >"$CLIENT_ENV" <<EOF
@@ -213,7 +206,7 @@ TARGET='${REALITY_TARGET}'
 EOF
 chmod 600 "$SERVER_ENV"
 
-echo "[6/8] Installing systemd service..."
+echo "[6/9] Installing systemd service..."
 cat >/etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=XHTTP REALITY tunnel server
@@ -244,31 +237,44 @@ systemctl daemon-reload
 systemctl enable --now "${SERVICE_NAME}.service"
 sleep 2
 
-echo "[7/8] Firewall..."
+echo "[7/9] Firewall..."
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
   ufw allow "${XHTTP_PORT}/tcp"
   echo "UFW allows TCP ${XHTTP_PORT}."
 else
-  echo "UFW is not active. If your provider has a firewall/security group, allow TCP ${XHTTP_PORT} there."
+  echo "UFW is not active. If your provider has a firewall/security group, allow TCP ${XHTTP_PORT}."
 fi
 
-echo "[8/8] Verification..."
-systemctl --no-pager --full status "${SERVICE_NAME}.service" | sed -n '1,14p' || true
-echo
+echo "[8/9] Verification..."
+systemctl is-active --quiet "${SERVICE_NAME}.service"
 if command -v ss >/dev/null 2>&1; then
   ss -lntp "( sport = :${XHTTP_PORT} )" || true
 else
   python3 - "$XHTTP_PORT" <<'PY'
 import socket, sys
 port = int(sys.argv[1])
-s = socket.socket()
-s.settimeout(2)
+s = socket(); s.settimeout(2)
 try:
     rc = s.connect_ex(('127.0.0.1', port))
     print(f'127.0.0.1:{port} listening={rc == 0}')
 finally:
     s.close()
 PY
+fi
+
+echo "[9/9] REALITY same-server camouflage hardening..."
+if [[ "$ENABLE_REALITY_DECOY" == "1" ]]; then
+  HARDENER="/root/upgrade-foreign-reality-hardening.sh"
+  curl -fsSL "$BASE_URL/upgrade-foreign-reality-hardening.sh" -o "$HARDENER"
+  chmod +x "$HARDENER"
+  DECOY_ZONE="$DECOY_ZONE" "$HARDENER" prepare
+  "$HARDENER" activate
+  source "$CLIENT_ENV"
+  source "$SERVER_ENV"
+  REALITY_SNI="$SNI"
+  REALITY_TARGET="$TARGET"
+else
+  echo "ENABLE_REALITY_DECOY=0: keeping explicitly requested REALITY target/SNI."
 fi
 
 echo
