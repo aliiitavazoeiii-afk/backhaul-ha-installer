@@ -30,3 +30,14 @@ jobs:
       - name: Python syntax
         run: |
           python3 -m py_compile dual-controller.py dual-controller-v2.py dual-controller-v3.py dual-controller-v4.py
+      - name: Production hardening invariants
+        run: |
+          grep -q '127.0.0.1:${DECOY_PORT}' upgrade-foreign-reality-hardening.sh
+          grep -q 'DECOY_ZONE' upgrade-foreign-reality-hardening.sh
+          grep -q 'Provider/PTR candidate' upgrade-foreign-reality-hardening.sh
+          grep -q 'disable_tlsalpn_challenge' upgrade-foreign-reality-hardening.sh
+          ! grep -q 'CAMOUFLAGE_HOST.*noded.cloud' upgrade-foreign-reality-hardening.sh
+          grep -q 'healthy_probe_interval' dual-controller-v4.py
+          grep -q '_next_probe' dual-controller-v4.py
+          grep -q 'controller-v4.py daemon' upgrade-dual-hardening.sh
+          ! grep -q '^apt-get update' install-foreign.sh
