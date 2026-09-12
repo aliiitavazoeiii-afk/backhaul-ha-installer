@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+PROJECT_REF="${PROJECT_REF:-xhttp-dual-sticky-failover}"
 XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"
-BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/xhttp-dual-sticky-failover"
+XRAY_SHA256="${XRAY_SHA256:-}"
+BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/${PROJECT_REF}"
 INSTALL_DIR="/opt/xhttp-dual"
 CONFIG_DIR="/etc/xhttp-dual"
 STATE_DIR="/var/lib/xhttp-dual"
@@ -36,7 +38,6 @@ cleanup_partial() {
   rm -rf "$INSTALL_DIR" "$CONFIG_DIR"
 }
 
-# A failed pre-controller install cannot have patched x-ui yet. Clean it automatically.
 if [[ ! -f "$CONFIG_DIR/config.json" ]] && { systemctl cat xhttp-dual-f1.service >/dev/null 2>&1 || systemctl cat xhttp-dual-f2.service >/dev/null 2>&1 || [[ -d "$INSTALL_DIR" ]] || [[ -d "$CONFIG_DIR" ]]; }; then
   cleanup_partial
 fi
@@ -90,18 +91,37 @@ apt-get install -y curl unzip jq ca-certificates iproute2 python3 sqlite3
 
 ARCH="$(dpkg --print-architecture)"
 case "$ARCH" in
-  amd64) ASSET="Xray-linux-64.zip" ;;
-  arm64) ASSET="Xray-linux-arm64-v8a.zip" ;;
+  amd64)
+    ASSET="Xray-linux-64.zip"
+    [[ -n "$XRAY_SHA256" ]] || [[ "$XRAY_VERSION" != "v26.3.27" ]] || XRAY_SHA256="23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae"
+    ;;
+  arm64)
+    ASSET="Xray-linux-arm64-v8a.zip"
+    [[ -n "$XRAY_SHA256" ]] || [[ "$XRAY_VERSION" != "v26.3.27" ]] || XRAY_SHA256="4d30283ae614e3057f730f67cd088a42be6fdf91f8639d82cb69e48cde80413c"
+    ;;
   *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
 esac
+if [[ -z "$XRAY_SHA256" ]]; then
+  echo "No trusted SHA256 is built in for ${XRAY_VERSION}/${ASSET}."
+  echo "Set XRAY_SHA256 explicitly before using a custom Xray version."
+  exit 1
+fi
 
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR" "$STATE_DIR"
 chmod 700 "$CONFIG_DIR" "$STATE_DIR"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 
 URL="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/${ASSET}"
-echo "[1/9] Installing Xray ${XRAY_VERSION}..."
+echo "[1/9] Installing verified Xray ${XRAY_VERSION}..."
 curl -fL --retry 5 --retry-delay 2 --connect-timeout 15 "$URL" -o "$TMP/xray.zip"
+python3 - "$TMP/xray.zip" "$XRAY_SHA256" <<'PY'
+import hashlib, sys
+path, expected = sys.argv[1:]
+h = hashlib.sha256(open(path, 'rb').read()).hexdigest()
+if h != expected:
+    raise SystemExit(f'Xray SHA256 mismatch: got {h}, expected {expected}')
+print(f'Xray SHA256 verified: {h}')
+PY
 unzip -q "$TMP/xray.zip" -d "$TMP/xray"
 install -m 0755 "$TMP/xray/xray" "$INSTALL_DIR/xray"
 "$INSTALL_DIR/xray" version | sed -n '1p'
@@ -233,8 +253,8 @@ cat >"$CONFIG_DIR/config.json" <<EOF
   "recovery_threshold": ${RECOVERY_THRESHOLD},
   "managed_fallback": true,
   "nodes": {
-    "f1": {"foreign_ip": "${F1_IP}", "socks_host": "127.0.0.1", "socks_port": ${SOCKS1}, "health_url": "https://cp.cloudflare.com/generate_204", "health_timeout": 8},
-    "f2": {"foreign_ip": "${F2_IP}", "socks_host": "127.0.0.1", "socks_port": ${SOCKS2}, "health_url": "https://cp.cloudflare.com/generate_204", "health_timeout": 8}
+    "f1": {"foreign_ip": "${F1_IP}", "foreign_port": ${F1_PORT}, "socks_host": "127.0.0.1", "socks_port": ${SOCKS1}, "health_url": "https://cp.cloudflare.com/generate_204", "health_timeout": 8},
+    "f2": {"foreign_ip": "${F2_IP}", "foreign_port": ${F2_PORT}, "socks_host": "127.0.0.1", "socks_port": ${SOCKS2}, "health_url": "https://cp.cloudflare.com/generate_204", "health_timeout": 8}
   }
 }
 EOF
