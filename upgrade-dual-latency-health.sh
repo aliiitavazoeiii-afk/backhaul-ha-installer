@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/xhttp-dual-sticky-failover"
+PROJECT_REF="${PROJECT_REF:-xhttp-dual-sticky-failover}"
+BASE_URL="https://raw.githubusercontent.com/aliiitavazoeiii-afk/backhaul-ha-installer/${PROJECT_REF}"
 INSTALL_DIR="/opt/xhttp-dual"
 V2="$INSTALL_DIR/controller-v2.py"
 V3="$INSTALL_DIR/controller-v3.py"
