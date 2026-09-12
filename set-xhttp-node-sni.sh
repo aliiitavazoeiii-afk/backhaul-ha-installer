@@ -64,19 +64,15 @@ PY
 
   python3 - "$ENV_FILE" "$STAGE_DIR/$(basename "$ENV_FILE")" "$new_sni" <<'PY'
 import sys
-src, dst, sni = sys.argv[1:]
-lines = open(src).read().splitlines()
-out = []
-seen = False
+src, dst, sni=sys.argv[1:]
+lines=open(src).read().splitlines(); out=[]; seen=False
 for line in lines:
     if line.startswith("SNI="):
-        out.append("SNI=" + repr(sni))
-        seen = True
+        out.append("SNI="+repr(sni)); seen=True
     else:
         out.append(line)
-if not seen:
-    out.append("SNI=" + repr(sni))
-open(dst, "w").write("\n".join(out) + "\n")
+if not seen: out.append("SNI="+repr(sni))
+open(dst,"w").write("\n".join(out)+"\n")
 PY
   printf '%s\n' "$new_sni" >"$STAGE_DIR/sni"
   chmod 600 "$STAGE_DIR/${NODE}.json" "$STAGE_DIR/$(basename "$ENV_FILE")" "$STAGE_DIR/sni"
@@ -91,10 +87,8 @@ activate_stage() {
   [[ -f "$STAGE_DIR/${NODE}.json" && -f "$STAGE_DIR/$(basename "$ENV_FILE")" && -f "$STAGE_DIR/sni" ]] || {
     echo "No staged SNI for $NODE. Run --stage first."; exit 1;
   }
-  local new_sni
+  local new_sni stamp backup_dir socks_port code egress
   new_sni="$(cat "$STAGE_DIR/sni")"
-
-  local stamp backup_dir
   stamp="$(date +%Y%m%d-%H%M%S)"
   backup_dir="$STATE_DIR/sni-backups/$stamp-$NODE"
   mkdir -p "$backup_dir"
@@ -117,21 +111,24 @@ activate_stage() {
   sleep 2
   systemctl is-active --quiet "$SERVICE"
 
-  local socks_port egress
   socks_port="$(python3 - "$ENV_FILE" <<'PY'
 import ast, sys
 for line in open(sys.argv[1]):
     if line.startswith("SOCKS_PORT="):
-        print(ast.literal_eval(line.split("=",1)[1].strip()))
-        break
-else:
-    raise SystemExit(1)
+        print(ast.literal_eval(line.split("=",1)[1].strip())); break
+else: raise SystemExit(1)
 PY
 )"
+
   echo "Testing $NODE with staged SNI through 127.0.0.1:$socks_port ..."
-  egress="$(curl -4 -fsS --max-time 20 --connect-timeout 8 \
-    --socks5-hostname "127.0.0.1:${socks_port}" https://icanhazip.com | tr -d '[:space:]')"
-  [[ -n "$egress" ]]
+  code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 --connect-timeout 6 --socks5-hostname "127.0.0.1:${socks_port}" https://cp.cloudflare.com/generate_204 || true)"
+  if [[ "$code" != "204" && "$code" != "200" ]]; then
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 --connect-timeout 6 --socks5-hostname "127.0.0.1:${socks_port}" https://connectivitycheck.gstatic.com/generate_204 || true)"
+  fi
+  [[ "$code" == "204" || "$code" == "200" ]] || { echo "End-to-end health test failed (HTTP ${code:-000})."; return 1; }
+
+  egress="$(curl -4 -fsS --max-time 10 --connect-timeout 5 --socks5-hostname "127.0.0.1:${socks_port}" https://icanhazip.com 2>/dev/null | tr -d '[:space:]' || true)"
+  [[ -n "$egress" ]] || egress="(health OK; egress lookup unavailable)"
 
   trap - ERR
   rm -rf "$STAGE_DIR"
@@ -139,6 +136,7 @@ PY
   echo "SNI ACTIVATION OK"
   echo "Node      : ${NODE^^}"
   echo "New SNI   : $new_sni"
+  echo "Health    : HTTP $code"
   echo "Egress    : $egress"
   echo "Backup    : $backup_dir"
   echo "x-ui      : NOT restarted by this helper"
