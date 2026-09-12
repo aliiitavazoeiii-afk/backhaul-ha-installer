@@ -177,7 +177,7 @@ https://${DECOY_DOMAIN}:8443 {
     bind 127.0.0.1
     tls {
         issuer acme {
-            ca https://acme-v02.api.letsencrypt.org/directory
+            dir https://acme-v02.api.letsencrypt.org/directory
             disable_tlsalpn_challenge
         }
     }
