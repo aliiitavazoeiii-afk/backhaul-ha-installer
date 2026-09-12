@@ -92,6 +92,11 @@ rollback() {
   echo
   echo "Hardening upgrade failed; rolling back controller/config/CLI..."
   cp -a "$BACKUP_DIR/config.json" "$CONFIG_DIR/config.json" || true
+  if [[ -f "$BACKUP_DIR/controller-v4.py.old" ]]; then
+    cp -a "$BACKUP_DIR/controller-v4.py.old" "$INSTALL_DIR/controller-v4.py" || true
+  else
+    rm -f "$INSTALL_DIR/controller-v4.py"
+  fi
   if [[ -f "$BACKUP_DIR/xhttp-dual" ]]; then
     cp -a "$BACKUP_DIR/xhttp-dual" /usr/local/bin/xhttp-dual || true
   fi
