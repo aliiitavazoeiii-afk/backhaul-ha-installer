@@ -20,6 +20,7 @@ jobs:
           bash -n install-foreign-vision.sh
           bash -n install-dual-iran.sh
           bash -n install-dual-iran-final.sh
+          bash -n install-dual-iran-vision.sh
           bash -n upgrade-dual-user-routing.sh
           bash -n upgrade-dual-latency-health.sh
           bash -n upgrade-dual-hardening.sh
@@ -29,6 +30,8 @@ jobs:
           bash -n replace-xhttp-node.sh
           bash -n migrate-dual-node-vision.sh
           bash -n resume-dual-node-vision-canary.sh
+          bash -n migrate-live-dual-node-vision.sh
+          bash -n activate-staged-vision-node.sh
           bash -n rollback-dual-node-vision.sh
           bash -n reset-dual-tunnel.sh
       - name: Python syntax
@@ -56,3 +59,11 @@ jobs:
           grep -q 'add_rule tcp; add_rule udp' resume-dual-node-vision-canary.sh
           grep -q "ns\['drained'\]=True" resume-dual-node-vision-canary.sh
           grep -q 'x-ui PID unchanged' resume-dual-node-vision-canary.sh
+      - name: Clean Vision installer invariants
+        run: |
+          grep -q 'No XHTTP. No iptables redirect' install-dual-iran-vision.sh
+          grep -q 'xtls-rprx-vision' install-dual-iran-vision.sh
+          grep -q '"network": "raw"' install-dual-iran-vision.sh
+          grep -q 'SOCKS1="${SOCKS1:-12818}"' install-dual-iran-vision.sh
+          grep -q 'SOCKS2="${SOCKS2:-12819}"' install-dual-iran-vision.sh
+          grep -q 'controller-v4.py daemon' install-dual-iran-vision.sh
