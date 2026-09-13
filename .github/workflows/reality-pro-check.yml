@@ -1,0 +1,47 @@
+name: Reality Pro checks
+
+on:
+  push:
+    branches: [reality-pro]
+  pull_request:
+    branches: [reality-pro]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: |
+          bash -n install-foreign-reality-pro.sh
+          bash -n install-iran-reality-pro.sh
+          bash -n uninstall-reality-pro.sh
+      - name: Python syntax
+        run: python3 -m py_compile reality-pro-controller.py
+      - name: Isolation invariants
+        run: |
+          grep -q 'reality-pro-fabric.service' install-iran-reality-pro.sh
+          grep -q '/usr/local/bin/reality-pro' install-iran-reality-pro.sh
+          grep -q 'REALITY PRO STICKY FAILOVER' reality-pro-controller.py
+          grep -q 'Existing xhttp-dual detected' install-iran-reality-pro.sh
+      - name: Failover invariants
+        run: |
+          grep -q 'RoutingService' install-iran-reality-pro.sh
+          grep -q 'rp-home-f1-bal' install-iran-reality-pro.sh
+          grep -q 'rp-home-f2-bal' install-iran-reality-pro.sh
+          grep -q "live fabric switch" reality-pro-controller.py
+          grep -q 'NO x-ui restart' reality-pro-controller.py
+          grep -q "healthy_probe_min_s',75" reality-pro-controller.py
+          grep -q "healthy_probe_max_s',180" reality-pro-controller.py
+      - name: Foreign hardening invariants
+        run: |
+          grep -q 'limitFallbackUpload' install-foreign-reality-pro.sh
+          grep -q 'limitFallbackDownload' install-foreign-reality-pro.sh
+          grep -q 'minClientVer' install-foreign-reality-pro.sh
+          grep -q 'www.apple.com:443' install-foreign-reality-pro.sh
+          grep -q 'www.microsoft.com:443' install-foreign-reality-pro.sh
+          grep -q '"port": "25"' install-foreign-reality-pro.sh
+          grep -q '100.64.0.0/10' install-foreign-reality-pro.sh
