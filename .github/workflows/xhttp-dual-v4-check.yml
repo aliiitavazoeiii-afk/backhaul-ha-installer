@@ -17,6 +17,7 @@ jobs:
       - name: Bash syntax
         run: |
           bash -n install-foreign.sh
+          bash -n install-foreign-vision.sh
           bash -n install-dual-iran.sh
           bash -n install-dual-iran-final.sh
           bash -n upgrade-dual-user-routing.sh
@@ -26,6 +27,8 @@ jobs:
           bash -n rollback-foreign-reality-hardening.sh
           bash -n set-xhttp-node-sni.sh
           bash -n replace-xhttp-node.sh
+          bash -n migrate-dual-node-vision.sh
+          bash -n rollback-dual-node-vision.sh
           bash -n reset-dual-tunnel.sh
       - name: Python syntax
         run: |
@@ -41,3 +44,11 @@ jobs:
           grep -q '_next_probe' dual-controller-v4.py
           grep -q 'controller-v4.py daemon' upgrade-dual-hardening.sh
           ! grep -q '^apt-get update' install-foreign.sh
+      - name: Vision migration invariants
+        run: |
+          grep -q 'xtls-rprx-vision' install-foreign-vision.sh
+          grep -q '"network": "raw"' install-foreign-vision.sh
+          grep -q 'dl.google.com:443' install-foreign-vision.sh
+          grep -q 'REDIRECT --to-ports' migrate-dual-node-vision.sh
+          grep -q 'Existing established' migrate-dual-node-vision.sh
+          grep -q 'x-ui restart   : NO' migrate-dual-node-vision.sh
