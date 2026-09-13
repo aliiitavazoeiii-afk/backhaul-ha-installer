@@ -4,6 +4,7 @@ set -Eeuo pipefail
 INSTALL_DIR="/opt/xhttp-dual"
 CONFIG_DIR="/etc/xhttp-dual"
 STATE_DIR="/var/lib/xhttp-dual"
+CONTROLLER_SERVICE="xhttp-dual-controller.service"
 
 [[ $EUID -eq 0 ]] || { echo "Run as root."; exit 1; }
 [[ -x "$INSTALL_DIR/xray" ]] || { echo "Dual XHTTP is not installed: $INSTALL_DIR/xray missing"; exit 1; }
@@ -18,12 +19,17 @@ prompt() {
 
 cat <<'EOF'
 ============================================================
-XHTTP DUAL - REPLACE FOREIGN NODE
+XHTTP DUAL - REPLACE FOREIGN NODE (ONLINE-SAFE)
 ============================================================
-IMPORTANT: Copy the EXACT values from the NEW Foreign server:
+Copy the EXACT values from the NEW Foreign server:
   cat /root/xhttp-reality-client.env
-Do not assume the SNI is www.cloudflare.com. Current Foreign installs may
-activate REALITY camouflage and use a different SNI (normally noded.cloud).
+
+Fresh Foreign installs may use a unique same-server decoy SNI. Never guess
+or reuse www.cloudflare.com/noded.cloud unless the NEW Foreign env literally
+contains that value.
+
+During the selected-node restart this helper pauses only the health controller.
+It does NOT deliberately restart x-ui and does NOT force xhttp-dual sync.
 ============================================================
 1) Replace Foreign #1 (F1)
 2) Replace Foreign #2 (F2)
@@ -56,14 +62,6 @@ prompt NEW_PATH "New Foreign #${NUM} XHTTP Path"
 [[ -n "$NEW_IP" && -n "$NEW_UUID" && -n "$NEW_PUB" && -n "$NEW_SID" && -n "$NEW_SNI" && -n "$NEW_PATH" ]] || { echo "All values are required."; exit 1; }
 [[ "$NEW_PORT" =~ ^[0-9]+$ ]] && (( NEW_PORT >= 1 && NEW_PORT <= 65535 )) || { echo "Invalid port"; exit 1; }
 [[ "$SOCKS_PORT" =~ ^[0-9]+$ ]] || { echo "Invalid local SOCKS port in config"; exit 1; }
-
-if [[ "$NEW_SNI" == "www.cloudflare.com" ]]; then
-  echo
-  echo "WARNING: SNI=www.cloudflare.com was entered."
-  echo "The current Foreign installer normally hardens REALITY to another SNI."
-  echo "Use Cloudflare only if /root/xhttp-reality-client.env on the NEW Foreign literally says:"
-  echo "  SNI='www.cloudflare.com'"
-fi
 
 echo
 echo "New node values to be tested:"
@@ -115,21 +113,33 @@ echo
 read -r -p "Replace ${NODE^^} ${OLD_IP} -> ${NEW_IP}? Type YES: " CONFIRM
 [[ "$CONFIRM" == "YES" ]] || { echo "Cancelled."; exit 0; }
 
+CONTROLLER_WAS_ACTIVE=0
+if systemctl is-active --quiet "$CONTROLLER_SERVICE" 2>/dev/null; then
+  CONTROLLER_WAS_ACTIVE=1
+fi
+
 rollback() {
   echo "Replacement failed. Rolling back ${NODE^^}..."
-  cp -a "$BACKUP_DIR/${NODE}.json" "$NODE_JSON"
-  cp -a "$BACKUP_DIR/config.json" "$CONFIG_DIR/config.json"
+  cp -a "$BACKUP_DIR/${NODE}.json" "$NODE_JSON" || true
+  cp -a "$BACKUP_DIR/config.json" "$CONFIG_DIR/config.json" || true
   if [[ -f "$BACKUP_DIR/$(basename "$ENV_FILE")" ]]; then
-    cp -a "$BACKUP_DIR/$(basename "$ENV_FILE")" "$ENV_FILE"
+    cp -a "$BACKUP_DIR/$(basename "$ENV_FILE")" "$ENV_FILE" || true
   fi
   if [[ -f "$BACKUP_DIR/state.json" ]]; then
-    cp -a "$BACKUP_DIR/state.json" "$STATE_DIR/state.json"
+    cp -a "$BACKUP_DIR/state.json" "$STATE_DIR/state.json" || true
   fi
   systemctl restart "$SERVICE" || true
-  systemctl restart xhttp-dual-controller.service 2>/dev/null || true
+  if (( CONTROLLER_WAS_ACTIVE == 1 )); then
+    systemctl start "$CONTROLLER_SERVICE" 2>/dev/null || true
+  fi
   echo "Rollback complete. Backup: $BACKUP_DIR"
 }
 trap rollback ERR
+
+echo "Pausing only the failover controller during planned ${NODE^^} replacement..."
+if (( CONTROLLER_WAS_ACTIVE == 1 )); then
+  systemctl stop "$CONTROLLER_SERVICE"
+fi
 
 install -m 0600 "$TMP/${NODE}.json" "$NODE_JSON"
 
@@ -149,26 +159,67 @@ TMP_CFG="$TMP/config.json"
 jq --arg n "$NODE" --arg ip "$NEW_IP" --argjson port "$NEW_PORT" '.nodes[$n].foreign_ip=$ip | .nodes[$n].foreign_port=$port' "$CONFIG_DIR/config.json" >"$TMP_CFG"
 install -m 0600 "$TMP_CFG" "$CONFIG_DIR/config.json"
 
-if [[ -f "$STATE_DIR/state.json" ]]; then
-  jq --arg n "$NODE" '.nodes[$n].healthy=null | .nodes[$n].failures=0 | .nodes[$n].slow_failures=0 | .nodes[$n].successes=0 | .nodes[$n].drained=false | .nodes[$n].last_latency_ms=null | .nodes[$n].last_reason=null | .nodes[$n].last_detail="replaced; awaiting health check"' "$STATE_DIR/state.json" >"$TMP/state.json"
-  install -m 0600 "$TMP/state.json" "$STATE_DIR/state.json"
-fi
-
 systemctl restart "$SERVICE"
 sleep 2
 systemctl is-active --quiet "$SERVICE"
 ss -lntH "( sport = :${SOCKS_PORT} )" | grep -q .
 
-echo "Testing new ${NODE^^} end-to-end..."
-EGRESS="$(curl -fsS --max-time 25 --connect-timeout 8 --socks5-hostname "127.0.0.1:${SOCKS_PORT}" https://icanhazip.com | tr -d '[:space:]')"
-[[ -n "$EGRESS" ]]
-echo "${NODE^^} egress: $EGRESS"
+echo "Testing new ${NODE^^} end-to-end through its local SOCKS..."
+HEALTH_OK=0
+HEALTH_DETAIL=""
+for URL in \
+  "https://cp.cloudflare.com/generate_204" \
+  "https://connectivitycheck.gstatic.com/generate_204"; do
+  OUT="$(curl -sS -o /dev/null -w '%{http_code} %{time_total}' --max-time 20 --connect-timeout 7 --socks5-hostname "127.0.0.1:${SOCKS_PORT}" "$URL" 2>/dev/null || true)"
+  CODE="${OUT%% *}"
+  TOTAL="${OUT#* }"
+  HEALTH_DETAIL="${URL} code=${CODE:-'-'} total=${TOTAL:-'-'}"
+  if [[ "$CODE" == "200" || "$CODE" == "204" ]]; then
+    HEALTH_OK=1
+    echo "Health OK: $HEALTH_DETAIL"
+    break
+  fi
+  echo "Health target failed: $HEALTH_DETAIL"
+done
+(( HEALTH_OK == 1 )) || { echo "New ${NODE^^} failed all end-to-end health targets."; false; }
 
-systemctl restart xhttp-dual-controller.service
-sleep 2
+EGRESS="unknown"
+for URL in "https://api.ipify.org" "https://icanhazip.com"; do
+  IP="$(curl -fsS --max-time 10 --connect-timeout 4 --socks5-hostname "127.0.0.1:${SOCKS_PORT}" "$URL" 2>/dev/null | tr -d '[:space:]' || true)"
+  if [[ -n "$IP" ]]; then EGRESS="$IP"; break; fi
+done
+echo "${NODE^^} egress: ${EGRESS}"
+
+# The new path has just passed an end-to-end probe. Keep it available in state
+# before resuming v4 so a planned replacement of a healthy node does not look
+# like an outage and trigger an unnecessary x-ui routing rewrite.
+if [[ -f "$STATE_DIR/state.json" ]]; then
+  jq --arg n "$NODE" --arg detail "planned replacement verified: $HEALTH_DETAIL" '
+    .nodes[$n].healthy=true |
+    .nodes[$n].failures=0 |
+    .nodes[$n].slow_failures=0 |
+    .nodes[$n].successes=1 |
+    .nodes[$n].drained=false |
+    .nodes[$n].last_reason="ok" |
+    .nodes[$n].last_detail=$detail
+  ' "$STATE_DIR/state.json" >"$TMP/state.json"
+  install -m 0600 "$TMP/state.json" "$STATE_DIR/state.json"
+fi
+
+if (( CONTROLLER_WAS_ACTIVE == 1 )); then
+  systemctl start "$CONTROLLER_SERVICE"
+  sleep 2
+fi
+
+# Do NOT run `xhttp-dual sync` here: sync is forceful and can restart x-ui.
+# A normal controller resume will preserve sticky mappings unless a real health
+# transition requires failover/failback.
 if command -v xhttp-dual >/dev/null 2>&1; then
-  xhttp-dual sync || true
   xhttp-dual status || true
+  if xhttp-dual netcheck >/dev/null 2>&1; then
+    echo
+    xhttp-dual netcheck || true
+  fi
 fi
 
 trap - ERR
@@ -180,5 +231,6 @@ echo "Old foreign : ${OLD_IP}"
 echo "New foreign : ${NEW_IP}:${NEW_PORT}"
 echo "SNI         : ${NEW_SNI}"
 echo "Egress      : ${EGRESS}"
+echo "x-ui        : not deliberately restarted by replacement"
 echo "Backup      : ${BACKUP_DIR}"
 echo "============================================================"
