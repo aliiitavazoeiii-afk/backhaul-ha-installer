@@ -166,6 +166,13 @@ write_decoy_config() {
     auto_https disable_redirects
 }
 
+# Explicit public HTTP listener is required for ACME HTTP-01. The HTTPS decoy
+# itself stays loopback-only on 8443. Without this block, the HTTPS site's
+# bind 127.0.0.1 can leave the ACME challenge reachable only on loopback.
+http://${host}:80 {
+    bind 0.0.0.0
+}
+
 https://${host}:${DECOY_PORT} {
     bind 127.0.0.1
     tls {
