@@ -28,6 +28,7 @@ jobs:
           bash -n set-xhttp-node-sni.sh
           bash -n replace-xhttp-node.sh
           bash -n migrate-dual-node-vision.sh
+          bash -n resume-dual-node-vision-canary.sh
           bash -n rollback-dual-node-vision.sh
           bash -n reset-dual-tunnel.sh
       - name: Python syntax
@@ -52,3 +53,6 @@ jobs:
           grep -q 'REDIRECT --to-ports' migrate-dual-node-vision.sh
           grep -q 'Existing established' migrate-dual-node-vision.sh
           grep -q 'x-ui restart   : NO' migrate-dual-node-vision.sh
+          grep -q 'add_rule tcp; add_rule udp' resume-dual-node-vision-canary.sh
+          grep -q "ns\['drained'\]=True" resume-dual-node-vision-canary.sh
+          grep -q 'x-ui PID unchanged' resume-dual-node-vision-canary.sh
